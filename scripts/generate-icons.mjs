@@ -40,26 +40,17 @@ function encodePng(size, rgb) {
   ])
 }
 
-// Desenho em coordenadas 0..1: fundo em degradê + halter estilizado.
+// Desenho em coordenadas 0..1: fundo #0d1117 liso + halter minimalista em verde #39d353.
 // "scale" reduz o desenho (usado no ícone maskable, que precisa de margem de segurança).
 function pixel(u, v, scale) {
-  // fundo: degradê diagonal azul-escuro -> roxo
-  const t = (u + v) / 2
-  let r = 14 + 40 * t, g = 18 + 20 * t, b = 40 + 90 * t
   const x = (u - 0.5) / scale + 0.5
   const y = (v - 0.5) / scale + 0.5
   const inRect = (x0, y0, x1, y1) => x >= x0 && x <= x1 && y >= y0 && y <= y1
-  const barra = inRect(0.2, 0.46, 0.8, 0.54)
-  const discos =
-    inRect(0.2, 0.3, 0.29, 0.7) || inRect(0.71, 0.3, 0.8, 0.7) ||
-    inRect(0.3, 0.37, 0.37, 0.63) || inRect(0.63, 0.37, 0.7, 0.63)
-  if (barra || discos) {
-    // preenchimento verde-limão
-    r = 190 + 50 * y; g = 245; b = 90
-  }
-  return [r, g, b]
+  const halter =
+    inRect(0.3, 0.47, 0.7, 0.53) || // barra
+    inRect(0.22, 0.34, 0.3, 0.66) || inRect(0.7, 0.34, 0.78, 0.66) // anilhas
+  return halter ? [57, 211, 83] : [13, 17, 23]
 }
-
 function render(size, scale) {
   const SS = 3 // supersampling para suavizar as bordas
   const buf = Buffer.alloc(size * size * 3)

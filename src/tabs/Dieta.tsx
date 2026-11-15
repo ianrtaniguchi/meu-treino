@@ -7,7 +7,7 @@ import { addDays, dayTotals, fmtLong, fmtNum, fmtShort, num, sumItems, today } f
 import type { Food, Goals, Meal, MealItem, MealType } from '../data/types'
 import { useSetting } from '../hooks'
 
-const TYPES: [MealType, string][] = [['cafe', '☕ Café da manhã'], ['almoco', '🍛 Almoço'], ['jantar', '🌙 Jantar'], ['lanche', '🍎 Lanches']]
+const TYPES: [MealType, string][] = [['cafe', 'café da manhã'], ['almoco', 'almoço'], ['jantar', 'jantar'], ['lanche', 'lanches']]
 const mealId = (date: string, type: MealType) => `meal-${date}-${type}`
 
 async function addItems(date: string, type: MealType, items: MealItem[]) {
@@ -44,12 +44,12 @@ export default function Dieta() {
     const items = m.items.filter((_, i) => i !== idx)
     if (items.length) await db.meals.put({ ...m, items })
     else await db.meals.delete(m.id)
-    toast('Alimento excluído', { label: 'Desfazer', run: () => void db.meals.put(before) })
+    toast('Alimento excluído', { label: 'desfazer', run: () => void db.meals.put(before) })
   }
   const removeMeal = async (m: Meal, label: string) => {
     if (!(await confirm(`Excluir toda a refeição "${label}" deste dia?`))) return
     await db.meals.delete(m.id)
-    toast('Refeição excluída', { label: 'Desfazer', run: () => void db.meals.put(m) })
+    toast('Refeição excluída', { label: 'desfazer', run: () => void db.meals.put(m) })
   }
   const repeat = async (type: MealType) => {
     const y = yesterday.find((m) => m.type === type)
@@ -58,28 +58,32 @@ export default function Dieta() {
     toast('Refeição de ontem copiada')
   }
 
-  const bars: [string, number, number, string][] = [
-    ['Calorias', tot.kcal, goals.kcal, 'kcal'], ['Proteína', tot.p, goals.p, 'g'],
-    ['Carboidrato', tot.c, goals.c, 'g'], ['Gordura', tot.g, goals.g, 'g'],
-  ]
-
   return (
     <>
-      <h1>Dieta</h1>
+      <h1>~/dieta</h1>
       <div className="row between">
         <button onClick={() => setDate(addDays(date, -1))}>‹</button>
-        <b style={{ textTransform: 'capitalize' }}>{date === today() ? 'Hoje' : fmtLong(date)}</b>
+        <b>{date === today() ? 'hoje' : fmtLong(date)}</b>
         <button onClick={() => setDate(addDays(date, 1))}>›</button>
       </div>
 
       <div className="card" style={{ marginTop: 10 }}>
-        {bars.map(([label, v, max, unit]) => (
-          <div key={label} style={{ marginBottom: 8 }}>
-            <div className="row between small"><span>{label}</span><span className="muted">{fmtNum(v)} / {fmtNum(max)} {unit}</span></div>
-            <Progress value={v} max={max} />
-          </div>
-        ))}
-        <button className="small" onClick={() => setShowGoals(true)}>Editar metas</button>
+        <div className="row between" style={{ alignItems: 'baseline' }}>
+          <span className="muted small">kcal</span>
+          <span className="muted small">meta {fmtNum(goals.kcal)}</span>
+        </div>
+        <div className={`big ${tot.kcal > goals.kcal * 1.05 ? 'amber' : ''}`}>{fmtNum(tot.kcal)}</div>
+        <div style={{ margin: '8px 0 14px' }}><Progress value={tot.kcal} max={goals.kcal} /></div>
+        <div className="grid3">
+          {([['proteína', tot.p, goals.p], ['carbo', tot.c, goals.c], ['gordura', tot.g, goals.g]] as [string, number, number][]).map(([label, v, max]) => (
+            <div key={label}>
+              <div className="muted small">{label}</div>
+              <div style={{ fontSize: 20, fontWeight: 700 }} className={v > max * 1.05 ? 'amber' : ''}>{fmtNum(v)}<span className="muted small">/{fmtNum(max)}g</span></div>
+              <div style={{ marginTop: 4 }}><Progress value={v} max={max} /></div>
+            </div>
+          ))}
+        </div>
+        <button className="small" style={{ marginTop: 12 }} onClick={() => setShowGoals(true)}>editar metas</button>
       </div>
 
       {TYPES.map(([type, label]) => {
@@ -89,7 +93,7 @@ export default function Dieta() {
         return (
           <div key={type} className="card">
             <div className="row between">
-              <h3 style={{ margin: 0 }}>{label}</h3>
+              <h3>{label}</h3>
               <span className="muted small">{t ? `${fmtNum(t.kcal)} kcal` : ''}</span>
             </div>
             {m?.items.map((it, i) => (
@@ -102,15 +106,15 @@ export default function Dieta() {
               </div>
             ))}
             <div className="row wrap" style={{ marginTop: 6 }}>
-              <button className="small primary" onClick={() => setAdding(type)}>+ Alimento</button>
-              {canRepeat && <button className="small" onClick={() => repeat(type)}>↻ Repetir de ontem</button>}
-              {m && <button className="small danger" onClick={() => removeMeal(m, label)}>Excluir refeição</button>}
+              <button className="small primary" onClick={() => setAdding(type)}>+ alimento</button>
+              {canRepeat && <button className="small" onClick={() => repeat(type)}>repetir de ontem</button>}
+              {m && <button className="small danger" onClick={() => removeMeal(m, label)}>excluir refeição</button>}
             </div>
           </div>
         )
       })}
 
-      <h2>Últimos 7 dias</h2>
+      <h2>últimos 7 dias</h2>
       <div className="card">
         {week.map((w) => (
           <div key={w.d} className="row" style={{ margin: '4px 0' }}>
@@ -202,7 +206,7 @@ function AddFood({ type, date, onClose }: { type: MealType; date: string; onClos
           {list.map((f) => (
             <div key={f.id} className="item tap" onClick={() => { setSel(f); setMult('1') }}>
               <div className="grow">
-                <div>{f.favorite ? '⭐ ' : ''}{f.name}</div>
+                <div>{f.favorite ? '* ' : ''}{f.name}</div>
                 <div className="muted small">{f.qty} · {fmtNum(f.kcal)} kcal · P {fmtNum(f.p)} C {fmtNum(f.c)} G {fmtNum(f.g)}{f.builtin ? ' · aprox.' : ''}</div>
               </div>
             </div>
@@ -235,20 +239,20 @@ function FoodsManager({ onClose }: { onClose: () => void }) {
   const remove = async (f: Food) => {
     if (!(await confirm(`Excluir "${f.name}" dos alimentos salvos?`))) return
     await db.foods.delete(f.id)
-    toast('Alimento excluído', { label: 'Desfazer', run: () => void db.foods.put(f) })
+    toast('Alimento excluído', { label: 'desfazer', run: () => void db.foods.put(f) })
   }
   return (
     <Sheet title="Alimentos salvos" onClose={onClose}>
-      <button className="primary block" onClick={() => setEdit('new')}>＋ Novo alimento</button>
+      <button className="primary block" onClick={() => setEdit('new')}>+ novo alimento</button>
       <p className="muted small">Os alimentos iniciais têm valores aproximados e podem ser editados.</p>
       {sorted.map((f) => (
         <div key={f.id} className="item">
-          <button className="ghost" aria-label="Favorito" onClick={() => void db.foods.update(f.id, { favorite: !f.favorite })}>{f.favorite ? '⭐' : '☆'}</button>
+          <button className="ghost" aria-label="Favorito" onClick={() => void db.foods.update(f.id, { favorite: !f.favorite })}>{f.favorite ? 'fav' : '---'}</button>
           <div className="grow" onClick={() => setEdit(f)}>
             <div>{f.name}</div>
             <div className="muted small">{f.qty} · {fmtNum(f.kcal)} kcal</div>
           </div>
-          <button className="ghost danger" aria-label="Excluir" onClick={() => remove(f)}>🗑️</button>
+          <button className="ghost danger" aria-label="Excluir" onClick={() => remove(f)}>rm</button>
         </div>
       ))}
       {edit && <FoodForm food={edit === 'new' ? undefined : edit} onClose={() => setEdit(null)} />}

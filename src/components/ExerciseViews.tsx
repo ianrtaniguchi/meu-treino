@@ -116,7 +116,7 @@ export function ExerciseDetail({ exercise, onClose }: { exercise: Exercise; onCl
     <Sheet title={exercise.name} onClose={onClose}>
       <p className="muted">{exercise.category} · nível {exercise.level} · {exercise.measure === 'time' ? 'tempo' : 'repetições'}</p>
       <div className="grid3">
-        <div className="stat"><span className="muted small">PR 🏆</span><b>{pr ? setLabel(pr, exercise.measure) : '—'}</b></div>
+        <div className="stat"><span className="muted small">PR</span><b>{pr ? setLabel(pr, exercise.measure) : '—'}</b></div>
         <div className="stat"><span className="muted small">Total {exercise.measure === 'time' ? 'seg.' : 'reps'}</span><b>{vol.total}</b></div>
         <div className="stat"><span className="muted small">Carga (kg×rep)</span><b>{fmtNum(vol.tonnage)}</b></div>
       </div>
@@ -127,11 +127,11 @@ export function ExerciseDetail({ exercise, onClose }: { exercise: Exercise; onCl
       {[...history].reverse().map((d) => (
         <div key={d.sessionId} className="card">
           <div className="muted small">{fmtShort(d.date)}</div>
-          <div className="sets">
+          <div className="row wrap" style={{ margin: '6px 0' }}>
             {d.sets.map((s) => (
-              <span key={s.id} className="set">
+              <span key={s.id} className="chip">
                 {setLabel(s, exercise.measure)}
-                {pr && s.id === pr.id && <span className="chip pr">PR</span>}
+                {pr && s.id === pr.id && <span className="tag-pr">[PR]</span>}
               </span>
             ))}
           </div>

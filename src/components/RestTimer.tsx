@@ -11,20 +11,20 @@ export function primeAudio() {
 }
 function beep() {
   if (!audioCtx) return
-  for (let i = 0; i < 3; i++) {
+  for (let i = 0; i < 2; i++) {
     const o = audioCtx.createOscillator()
     const g = audioCtx.createGain()
-    o.frequency.value = 880
-    g.gain.value = 0.2
+    o.frequency.value = 660
+    g.gain.value = 0.12
     o.connect(g).connect(audioCtx.destination)
-    const t = audioCtx.currentTime + i * 0.25
+    const t = audioCtx.currentTime + i * 0.2
     o.start(t)
-    o.stop(t + 0.15)
+    o.stop(t + 0.1)
   }
 }
 
-/** Timer de descanso baseado no horário final (continua correto se a tela apagar). */
-export default function RestTimer({ endAt, onChange, onClear }: { endAt: number; onChange: (end: number) => void; onClear: () => void }) {
+/** Descanso: contagem regressiva grande e silenciosa. Baseada no horário final (correta mesmo se a tela apagar). */
+export default function RestPanel({ endAt, total, onChange, onClear }: { endAt: number; total: number; onChange: (end: number) => void; onClear: () => void }) {
   const [now, setNow] = useState(Date.now())
   const fired = useRef(false)
   useEffect(() => {
@@ -32,23 +32,28 @@ export default function RestTimer({ endAt, onChange, onClear }: { endAt: number;
     const id = window.setInterval(() => setNow(Date.now()), 250)
     return () => window.clearInterval(id)
   }, [endAt])
-  const left = Math.max(0, Math.ceil((endAt - now) / 1000))
+  const leftMs = Math.max(0, endAt - now)
+  const left = Math.ceil(leftMs / 1000)
   useEffect(() => {
     if (left === 0 && !fired.current) {
       fired.current = true
-      navigator.vibrate?.([300, 150, 300]) // iOS Safari geralmente não suporta vibração
+      navigator.vibrate?.([200, 100, 200]) // o iOS Safari costuma ignorar
       beep()
     }
   }, [left])
+  const pct = total > 0 ? Math.min(100, ((total * 1000 - leftMs) / (total * 1000)) * 100) : 100
   const mm = String(Math.floor(left / 60)).padStart(2, '0')
   const ss = String(left % 60).padStart(2, '0')
   return (
-    <div className="rest">
-      <span>{left === 0 ? 'Descanso acabou!' : 'Descanso'}</span>
-      <span className="t">{mm}:{ss}</span>
-      <button onClick={() => onChange(Math.max(Date.now(), endAt - 15000))}>−15s</button>
-      <button onClick={() => onChange(endAt + 15000)}>+15s</button>
-      <button onClick={onClear}>✕</button>
+    <div style={{ marginTop: 8 }}>
+      <div className="muted small">{left === 0 ? '# descanso concluído' : '# descanso'}</div>
+      <div className={`rest-big ${left === 0 ? 'green' : ''}`}>{mm}:{ss}</div>
+      <div className="bar" style={{ margin: '12px 0' }}><i style={{ width: `${pct}%`, transition: 'none' }} /></div>
+      <div className="grid3">
+        <button style={{ minHeight: 48 }} onClick={() => onChange(Math.max(Date.now(), endAt - 15000))}>-15s</button>
+        <button style={{ minHeight: 48 }} onClick={() => onChange(endAt + 15000)}>+15s</button>
+        <button style={{ minHeight: 48 }} onClick={onClear}>pular</button>
+      </div>
     </div>
   )
 }

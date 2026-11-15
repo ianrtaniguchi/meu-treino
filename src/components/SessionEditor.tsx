@@ -1,15 +1,13 @@
 import { useLiveQuery } from 'dexie-react-hooks'
 import { useEffect, useMemo, useState } from 'react'
-import { db, setSetting, uid } from '../data/db'
-import { lastPerformance, num, setLabel, fmtShort } from '../data/stats'
+import { db, uid } from '../data/db'
+import { fmtShort, lastPerformance, num, setLabel } from '../data/stats'
 import type { Exercise, Session } from '../data/types'
-import { useSetting } from '../hooks'
 import { ExercisePicker } from './ExerciseViews'
-import RestTimer, { primeAudio } from './RestTimer'
 import { Field, useUi } from './ui'
 
 /** Leitura-modificação-gravação da sessão numa transação (cada ação grava na hora). */
-async function updateSession(id: string, fn: (s: Session) => void) {
+export async function updateSession(id: string, fn: (s: Session) => void) {
   await db.transaction('rw', db.sessions, async () => {
     const s = await db.sessions.get(id)
     if (!s) return
@@ -18,61 +16,34 @@ async function updateSession(id: string, fn: (s: Session) => void) {
   })
 }
 
-export default function SessionEditor({ id, active, onClose }: { id: string; active: boolean; onClose: () => void }) {
+/** Revisão/edição de um treino já registrado (o treino em andamento usa o modo foco). */
+export default function SessionEditor({ id, onClose }: { id: string; onClose: () => void }) {
   const { confirm, toast } = useUi()
   const session = useLiveQuery(() => db.sessions.get(id), [id], undefined)
   const [loaded, setLoaded] = useState(false)
   const exercises = useLiveQuery(() => db.exercises.toArray(), [], [] as Exercise[])
   const allSessions = useLiveQuery(() => db.sessions.toArray(), [], [] as Session[])
-  const restSeconds = useSetting<number>('restSeconds', 90) ?? 90
-  const [restEnd, setRestEnd] = useState<number | null>(null)
   const [picking, setPicking] = useState(false)
   const byId = useMemo(() => new Map(exercises.map((e) => [e.id, e])), [exercises])
 
   useEffect(() => { if (session !== undefined) setLoaded(true) }, [session])
-  // sessão sumiu (ex.: restauração de backup): sai da edição
   useEffect(() => { if (loaded && session === undefined) onClose() }, [loaded, session, onClose])
   if (!session) return null
 
   const totalSets = session.entries.reduce((n, e) => n + e.sets.length, 0)
 
-  const finish = async () => {
-    if (totalSets === 0) {
-      if (!(await confirm('Nenhuma série registrada. Descartar este treino?', 'Descartar'))) return
-      await db.sessions.delete(id)
-    } else {
-      await updateSession(id, (s) => { s.finishedAt = Date.now() })
-    }
-    await setSetting('activeSessionId', null)
-    onClose()
-  }
-  const discard = async () => {
-    if (!(await confirm('Descartar este treino e todas as séries?', 'Descartar'))) return
+  const remove = async () => {
+    if (!(await confirm('Excluir este treino e todas as séries?'))) return
     const copy = session
     await db.sessions.delete(id)
-    if (active) await setSetting('activeSessionId', null)
     onClose()
-    toast('Treino descartado', { label: 'Desfazer', run: () => void db.sessions.put(copy) })
-  }
-
-  const addSet = (exerciseId: string, value: number, load: number, rpe?: number) => {
-    primeAudio()
-    void updateSession(id, (s) => {
-      s.entries.find((e) => e.exerciseId === exerciseId)?.sets.push({ id: uid(), value, load, ...(rpe ? { rpe } : {}) })
-    })
-    setRestEnd(Date.now() + restSeconds * 1000)
+    toast('Treino excluído', { label: 'desfazer', run: () => void db.sessions.put(copy) })
   }
 
   return (
     <div>
-      {restEnd && <RestTimer endAt={restEnd} onChange={setRestEnd} onClear={() => setRestEnd(null)} />}
-      <div className="row between">
-        <div className="grow">
-          <h1 style={{ margin: 0 }}>{session.name}</h1>
-          <div className="muted">{fmtShort(session.date)} · {totalSets} séries</div>
-        </div>
-        {active ? <button className="primary" onClick={finish}>Finalizar</button> : <button onClick={onClose}>Fechar</button>}
-      </div>
+      <h1 style={{ marginBottom: 2 }}>{session.name.toLowerCase()}</h1>
+      <div className="muted">{session.date} · {totalSets} séries</div>
 
       {session.entries.map((entry) => {
         const ex = byId.get(entry.exerciseId)
@@ -82,7 +53,11 @@ export default function SessionEditor({ id, active, onClose }: { id: string; act
             exercise={ex}
             entry={entry}
             last={lastPerformance(allSessions, entry.exerciseId, id)}
-            onAdd={(v, l, r) => addSet(entry.exerciseId, v, l, r)}
+            onAdd={(v, l, r) =>
+              void updateSession(id, (s) => {
+                s.entries.find((e) => e.exerciseId === entry.exerciseId)?.sets.push({ id: uid(), value: v, load: l, ...(r ? { rpe: r } : {}) })
+              })
+            }
             onDeleteSet={async (setId) => {
               if (!(await confirm('Excluir esta série?'))) return
               await updateSession(id, (s) => {
@@ -98,19 +73,21 @@ export default function SessionEditor({ id, active, onClose }: { id: string; act
         )
       })}
 
-      <button className="block" style={{ margin: '6px 0 12px' }} onClick={() => setPicking(true)}>+ Adicionar exercício</button>
+      <button className="block" style={{ margin: '4px 0 12px' }} onClick={() => setPicking(true)}>+ exercício</button>
       <label className="f">
-        Notas do treino
+        notas
         <textarea value={session.notes} onChange={(e) => void updateSession(id, (s) => { s.notes = e.target.value })} />
       </label>
-      {active && <button className="danger block" style={{ marginTop: 12 }} onClick={discard}>Descartar treino</button>}
-      {!active && <button className="danger block" style={{ marginTop: 12 }} onClick={discard}>Excluir treino</button>}
+      <div className="grid2" style={{ marginTop: 12 }}>
+        <button onClick={onClose}>fechar</button>
+        <button className="danger" onClick={remove}>excluir treino</button>
+      </div>
 
       {picking && (
         <ExercisePicker
           onClose={() => setPicking(false)}
           onPick={(e) => {
-            if (session.entries.some((x) => x.exerciseId === e.id)) return toast('Esse exercício já está no treino')
+            if (session.entries.some((x) => x.exerciseId === e.id)) return toast('Exercício já está no treino')
             void updateSession(id, (s) => { s.entries.push({ exerciseId: e.id, sets: [] }) })
           }}
         />
@@ -128,11 +105,9 @@ function ExerciseBlock({ exercise, entry, last, onAdd, onDeleteSet, onRemove }: 
   onRemove: () => void
 }) {
   const measure = exercise?.measure ?? 'reps'
-  // pré-preenche com a última série deste treino, ou com a da última vez
   const ref = entry.sets[entry.sets.length - 1] ?? last?.sets[0]
   const [value, setValue] = useState('')
   const [load, setLoad] = useState('')
-  const [rpe, setRpe] = useState('')
   useEffect(() => {
     if (ref && value === '' && load === '') { setValue(String(ref.value)); setLoad(ref.load ? String(ref.load) : '') }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -142,37 +117,25 @@ function ExerciseBlock({ exercise, entry, last, onAdd, onDeleteSet, onRemove }: 
     <div className="card" style={{ marginTop: 12 }}>
       <div className="row between">
         <div className="grow">
-          <h3 style={{ margin: 0 }}>{exercise?.name ?? '(exercício removido)'}</h3>
+          <h3>{exercise?.name ?? '(exercício removido)'}</h3>
           <div className="muted small">
-            {last
-              ? <>Última vez ({fmtShort(last.date)}): {last.sets.map((s) => setLabel(s, measure)).join(' · ')}</>
-              : 'Primeira vez neste exercício'}
+            {last ? <>última vez ({fmtShort(last.date)}): {last.sets.map((s) => setLabel(s, measure)).join(' · ')}</> : 'primeira vez'}
           </div>
         </div>
-        <button className="ghost small" aria-label="Remover exercício" onClick={onRemove}>🗑️</button>
+        <button className="ghost small" aria-label="Remover exercício" onClick={onRemove}>rm</button>
       </div>
-      <div className="sets">
+      <div className="row wrap" style={{ margin: '8px 0' }}>
         {entry.sets.map((s, i) => (
-          <button key={s.id} className="set" onClick={() => onDeleteSet(s.id)} title="Toque para excluir">
-            <span className="muted">{i + 1}.</span> {setLabel(s, measure)}{s.rpe ? ` @${s.rpe}` : ''}
+          <button key={s.id} className="small" onClick={() => onDeleteSet(s.id)} title="Toque para excluir">
+            {i + 1}: {setLabel(s, measure)}{s.rpe ? ` @${s.rpe}` : ''}
           </button>
         ))}
       </div>
-      <div className="grid3">
-        <Field label={measure === 'time' ? 'Segundos' : 'Reps'} value={value} onChange={setValue} mode="numeric" />
-        <Field label="Carga (kg)" value={load} onChange={setLoad} />
-        <label className="f">
-          RPE
-          <select value={rpe} onChange={(e) => setRpe(e.target.value)}>
-            <option value="">—</option>
-            {[6, 7, 8, 9, 10].map((n) => <option key={n}>{n}</option>)}
-          </select>
-        </label>
+      <div className="grid3" style={{ alignItems: 'end' }}>
+        <Field label={measure === 'time' ? 'segundos' : 'reps'} value={value} onChange={setValue} mode="numeric" />
+        <Field label="carga kg" value={load} onChange={setLoad} />
+        <button className="primary" disabled={num(value) <= 0} onClick={() => onAdd(num(value), num(load))}>+ série</button>
       </div>
-      <button className="primary block" style={{ marginTop: 8 }} disabled={num(value) <= 0}
-        onClick={() => onAdd(num(value), num(load), rpe ? Number(rpe) : undefined)}>
-        + Série
-      </button>
     </div>
   )
 }

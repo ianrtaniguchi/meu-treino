@@ -7,14 +7,10 @@ import Treino from './tabs/Treino'
 import Dieta from './tabs/Dieta'
 import Corpo from './tabs/Corpo'
 import Config from './tabs/Config'
+import Icon from './components/Icons'
 
 type Tab = 'treino' | 'dieta' | 'corpo' | 'config'
-const TABS: [Tab, string, string][] = [
-  ['treino', '🏋️', 'Treino'],
-  ['dieta', '🍽️', 'Dieta'],
-  ['corpo', '📏', 'Corpo'],
-  ['config', '⚙️', 'Config'],
-]
+const TABS: Tab[] = ['treino', 'dieta', 'corpo', 'config']
 const WEEK = 7 * 24 * 3600 * 1000
 
 export default function App() {
@@ -53,21 +49,12 @@ export default function App() {
   if (!onboarded)
     return (
       <div className="scroll">
-        <div className="hero">
-          <div className="big">📲</div>
-          <h1>Antes de começar</h1>
-          <p style={{ fontSize: 18 }}>
-            <b>Instale o app na Tela de Início ANTES de registrar dados.</b> No iPhone, os dados do Safari e do app
-            instalado são separados.
-          </p>
-          <p className="muted">
-            No Safari: toque em Compartilhar → “Adicionar à Tela de Início”. Depois abra o app pelo ícone e use sempre
-            por ele. Faça backups com frequência em Config.
-          </p>
-          <button className="primary block" onClick={() => setSetting('onboardingDone', true)}>
-            Entendi
-          </button>
+        <h1>~/antes-de-comecar</h1>
+        <div className="card stack">
+          <div><b>Instale o app na Tela de Início ANTES de registrar dados.</b> No iPhone, os dados do Safari e do app instalado são separados.</div>
+          <div className="muted small"># Safari: compartilhar → "Adicionar à Tela de Início". Depois abra sempre pelo ícone. Faça backups com frequência em ~/config.</div>
         </div>
+        <button className="primary block" onClick={() => setSetting('onboardingDone', true)}>$ entendi</button>
       </div>
     )
 
@@ -80,9 +67,7 @@ export default function App() {
       <div className="scroll">
         {stale && (
           <div className="banner" onClick={() => setTab('config')}>
-            <span className="grow">
-              {lastBackup ? `Último backup há ${days} dias.` : 'Você ainda não fez nenhum backup.'} Toque para fazer agora.
-            </span>
+            {lastBackup ? `warn: último backup há ${days} dias.` : 'warn: nenhum backup feito ainda.'} toque para fazer agora.
           </div>
         )}
         {tab === 'treino' && <Treino />}
@@ -91,10 +76,10 @@ export default function App() {
         {tab === 'config' && <Config />}
       </div>
       <nav className="tabbar">
-        {TABS.map(([k, ic, label]) => (
-          <button key={k} className={tab === k ? 'on' : ''} onClick={() => setTab(k)}>
-            <span className="ic">{ic}</span>
-            {label}
+        {TABS.map((k) => (
+          <button key={k} className={tab === k ? 'on' : ''} onClick={() => setTab(k)} aria-label={k}>
+            <Icon name={k} />
+            {k}
           </button>
         ))}
       </nav>

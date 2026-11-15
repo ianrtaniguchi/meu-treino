@@ -53,7 +53,7 @@ export function UiProvider({ children }: { children: ReactNode }) {
           <div className="sheet center stack" style={{ padding: 18 }}>
             <div>{conf.msg}</div>
             <div className="grid2">
-              <button onClick={() => close(false)}>Cancelar</button>
+              <button onClick={() => close(false)}>cancelar</button>
               <button className={conf.danger ? 'danger' : 'primary'} onClick={() => close(true)}>
                 {conf.okLabel}
               </button>
@@ -71,8 +71,8 @@ export function Sheet({ title, onClose, children }: { title: string; onClose: ()
     <div className="overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
       <div className="sheet" role="dialog" aria-label={title}>
         <div className="sheet-head">
-          <h2 style={{ margin: 0 }}>{title}</h2>
-          <button className="ghost" onClick={onClose}>Fechar</button>
+          <h3>{title}</h3>
+          <button className="ghost" onClick={onClose}>fechar</button>
         </div>
         {children}
       </div>
@@ -91,7 +91,7 @@ export function Progress({ value, max }: { value: number; max: number }) {
 
 export function Seg<T extends string>({ value, options, onChange }: { value: T; options: [T, string][]; onChange: (v: T) => void }) {
   return (
-    <div className="seg">
+    <div className="tabs">
       {options.map(([k, label]) => (
         <button key={k} className={value === k ? 'on' : ''} onClick={() => onChange(k)}>
           {label}

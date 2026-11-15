@@ -33,7 +33,7 @@ export default function Corpo() {
   const remove = async (e: BodyEntry) => {
     if (!(await confirm(`Excluir o registro de ${fmtShort(e.date)}?`))) return
     await db.body.delete(e.id)
-    toast('Registro excluído', { label: 'Desfazer', run: () => void db.body.put(e) })
+    toast('Registro excluído', { label: 'desfazer', run: () => void db.body.put(e) })
   }
 
   const series = useMemo(() => {
@@ -50,7 +50,7 @@ export default function Corpo() {
 
   return (
     <>
-      <h1>Corpo</h1>
+      <h1>~/corpo</h1>
       <div className="card stack">
         <Field label="Data" type="date" value={date} mode="text" onChange={setDate} />
         <Field label={`Peso (kg)${existing?.weight ? ` — atual: ${fmtNum(existing.weight)}` : ''}`} value={weight} onChange={setWeight} />
@@ -73,7 +73,7 @@ export default function Corpo() {
         </div>
       )}
 
-      <h2>Evolução</h2>
+      <h2>evolução</h2>
       <label className="f">
         <select value={metric} onChange={(e) => setMetric(e.target.value)}>
           <option value="peso">Peso (com média móvel de 7 dias)</option>
@@ -84,7 +84,7 @@ export default function Corpo() {
         <Chart data={series} name={metric === 'peso' ? 'Peso' : 'Medida'} name2="Média 7d" unit={metric === 'peso' ? ' kg' : ' cm'} />
       </div>
 
-      <h2>Registros</h2>
+      <h2>registros</h2>
       {entries.length === 0 && <p className="muted">Nenhum registro ainda.</p>}
       {[...entries].reverse().map((e) => (
         <div key={e.id} className="card row">
@@ -94,7 +94,7 @@ export default function Corpo() {
               {Object.entries(e.measures).map(([k, v]) => `${MEASURES.find((x) => x[0] === k)?.[1] ?? k}: ${fmtNum(v)}`).join(' · ')}
             </div>
           </div>
-          <button className="ghost danger" aria-label="Excluir registro" onClick={() => remove(e)}>🗑️</button>
+          <button className="ghost danger" aria-label="Excluir registro" onClick={() => remove(e)}>rm</button>
         </div>
       ))}
     </>

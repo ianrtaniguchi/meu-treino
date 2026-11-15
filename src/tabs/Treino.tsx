@@ -1,25 +1,31 @@
 import { useLiveQuery } from 'dexie-react-hooks'
 import { useMemo, useState } from 'react'
+import CommitLog from '../components/CommitLog'
 import { ExerciseDetail, ExerciseForm, ExerciseList, ExercisePicker } from '../components/ExerciseViews'
+import FocusMode from '../components/FocusMode'
+import Heatmap, { heatRange } from '../components/Heatmap'
 import SessionEditor from '../components/SessionEditor'
 import { Seg, Sheet, useUi } from '../components/ui'
 import { db, setSetting, uid } from '../data/db'
-import { fmtLong, fmtShort, parseDate, today, toDateStr, weeklyCounts } from '../data/stats'
-import type { Exercise, Routine, Session } from '../data/types'
+import { DEFAULT_GOALS } from '../data/seed'
+import { fmtNum, parseDate, today, toDateStr, weeklyCounts, fmtShort } from '../data/stats'
+import type { BodyEntry, Exercise, Goals, Meal, Routine, Session } from '../data/types'
 import { useSetting } from '../hooks'
+import { buildDays, streaks } from '../lib/panel'
 
-type Sub = 'hoje' | 'historico' | 'exercicios' | 'rotinas'
+type Sub = 'painel' | 'historico' | 'exercicios' | 'rotinas'
 
 export default function Treino() {
-  const [sub, setSub] = useState<Sub>('hoje')
+  const [sub, setSub] = useState<Sub>('painel')
   return (
     <>
+      <h1>~/treino</h1>
       <Seg<Sub>
         value={sub}
         onChange={setSub}
-        options={[['hoje', 'Treinar'], ['historico', 'Histórico'], ['exercicios', 'Exercícios'], ['rotinas', 'Rotinas']]}
+        options={[['painel', 'painel'], ['historico', 'histórico'], ['exercicios', 'exercícios'], ['rotinas', 'rotinas']]}
       />
-      {sub === 'hoje' && <Hoje />}
+      {sub === 'painel' && <Painel />}
       {sub === 'historico' && <Historico />}
       {sub === 'exercicios' && <Exercicios />}
       {sub === 'rotinas' && <Rotinas />}
@@ -27,12 +33,27 @@ export default function Treino() {
   )
 }
 
-function Hoje() {
+function Painel() {
   const activeId = useSetting<string | null>('activeSessionId', null)
   const active = useLiveQuery(async () => (activeId ? await db.sessions.get(activeId) : undefined), [activeId], undefined)
   const routines = useLiveQuery(() => db.routines.toArray(), [], [] as Routine[])
+  const sessions = useLiveQuery(() => db.sessions.toArray(), [], [] as Session[])
+  const meals = useLiveQuery(() => db.meals.toArray(), [], [] as Meal[])
+  const body = useLiveQuery(() => db.body.toArray(), [], [] as BodyEntry[])
+  const goals = useSetting<Goals>('goals', DEFAULT_GOALS) ?? DEFAULT_GOALS
+  const gap = useSetting<number>('streakGap', 2) ?? 2
   const restSeconds = useSetting<number>('restSeconds', 90)
-  const recent = useLiveQuery(() => db.sessions.orderBy('date').reverse().limit(1).toArray(), [], [] as Session[])
+  const [focus, setFocus] = useState(false)
+  const [sel, setSel] = useState<string>(today())
+
+  const t = today()
+  const { from, to } = heatRange(t)
+  const days = useMemo(() => buildDays(from, to, sessions, meals, body, goals), [from, to, sessions, meals, body, goals])
+
+  const trained = sessions.filter((s) => s.entries.some((e) => e.sets.length > 0))
+  const st = streaks(trained.map((s) => s.date), gap, t)
+  const inMonth = trained.filter((s) => s.date.startsWith(t.slice(0, 7))).length
+  const inYear = trained.filter((s) => s.date.startsWith(t.slice(0, 4))).length
 
   const start = async (r?: Routine) => {
     const s: Session = {
@@ -43,35 +64,68 @@ function Hoje() {
       await db.sessions.add(s)
       await setSetting('activeSessionId', s.id)
     })
+    setFocus(true)
   }
 
   if (activeId === undefined) return null
-  if (activeId && active) return <SessionEditor id={activeId} active onClose={() => void setSetting('activeSessionId', null)} />
+  const hasActive = !!(activeId && active)
+  if (hasActive && focus) return <FocusMode id={activeId!} onMinimize={() => setFocus(false)} />
 
+  const day = days.get(sel)
   return (
     <>
-      <h1>Treinar</h1>
-      <button className="primary block" onClick={() => start()}>▶ Começar treino livre</button>
-      <h2>Começar uma rotina</h2>
-      {routines.length === 0 && <p className="muted">Crie rotinas na aba “Rotinas”.</p>}
-      {routines.map((r) => (
-        <button key={r.id} className="block" style={{ marginBottom: 8, textAlign: 'left' }} onClick={() => start(r)}>
-          ▶ {r.name} <span className="muted small">· {r.exerciseIds.length} exercícios</span>
-        </button>
-      ))}
-      <h2>Descanso entre séries</h2>
+      <div className="card">
+        <Heatmap days={days} selected={sel} onSelect={setSel} />
+      </div>
+      <div className="card small" style={{ minHeight: 70 }}>
+        <div className="muted">{sel}{sel === t ? ' (hoje)' : ''} · {['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sáb'][parseDate(sel).getDay()]}</div>
+        {day ? (
+          <div className="stack" style={{ marginTop: 4 }}>
+            <div>treino: {day.sets ? `${day.sessions.map((s) => s.name.toLowerCase()).join(', ')} · ${day.sets} séries` : <span className="muted">—</span>}</div>
+            <div>dieta: {day.mealCount ? `${fmtNum(day.kcal)} kcal · ${fmtNum(day.protein)}g prot (meta ${goals.p}g)` : <span className="muted">—</span>}</div>
+            <div>peso: {day.weight !== undefined ? `${fmtNum(day.weight)} kg` : <span className="muted">—</span>}</div>
+          </div>
+        ) : <div className="muted" style={{ marginTop: 4 }}>sem registros.</div>}
+      </div>
+
+      <div className="grid4" style={{ margin: '14px 0' }}>
+        <div className="stat"><b className={st.current ? 'green' : ''}>{st.current}</b><span>streak atual</span></div>
+        <div className="stat"><b>{st.longest}</b><span>maior streak</span></div>
+        <div className="stat"><b>{inMonth}</b><span>treinos no mês</span></div>
+        <div className="stat"><b>{inYear}</b><span>total no ano</span></div>
+      </div>
+
+      {hasActive ? (
+        <button className="primary block" style={{ minHeight: 52 }} onClick={() => setFocus(true)}>$ continuar treino ({active!.name.toLowerCase()})</button>
+      ) : (
+        <button className="primary block" style={{ minHeight: 52 }} onClick={() => start()}>$ iniciar treino</button>
+      )}
+
+      {!hasActive && routines.length > 0 && (
+        <>
+          <h2>rotinas</h2>
+          {routines.map((r) => (
+            <button key={r.id} className="block" style={{ marginBottom: 6, textAlign: 'left' }} onClick={() => start(r)}>
+              $ ./{r.name.toLowerCase().replace(/\s+/g, '-')} <span className="muted">({r.exerciseIds.length} ex)</span>
+            </button>
+          ))}
+        </>
+      )}
+
+      <h2>descanso entre séries</h2>
       <div className="row">
         {[60, 90, 120, 180].map((s) => (
-          <button key={s} className={restSeconds === s ? 'primary' : ''} onClick={() => setSetting('restSeconds', s)}>{s}s</button>
+          <button key={s} className={restSeconds === s ? 'on' : ''} onClick={() => setSetting('restSeconds', s)}>{s}s</button>
         ))}
       </div>
-      {recent[0] && <p className="muted" style={{ marginTop: 16 }}>Último treino: {recent[0].name} em {fmtShort(recent[0].date)}</p>}
+
+      <h2>git log</h2>
+      <CommitLog limit={12} />
     </>
   )
 }
 
 function Historico() {
-  const { confirm, toast } = useUi()
   const sessions = useLiveQuery(() => db.sessions.toArray(), [], [] as Session[])
   const [month, setMonth] = useState(() => today().slice(0, 7))
   const [sel, setSel] = useState<string | null>(null)
@@ -83,29 +137,21 @@ function Historico() {
   const monthCount = sessions.filter((s) => s.date.startsWith(month)).length
 
   const first = parseDate(month + '-01')
-  const lead = (first.getDay() + 6) % 7 // semana começa na segunda
+  const lead = (first.getDay() + 6) % 7
   const nDays = new Date(first.getFullYear(), first.getMonth() + 1, 0).getDate()
   const shift = (n: number) => setMonth(toDateStr(new Date(first.getFullYear(), first.getMonth() + n, 1)).slice(0, 7))
-
-  const list = (sel ? sessions.filter((s) => s.date === sel) : [...sessions].sort((a, b) => b.date.localeCompare(a.date) || b.createdAt - a.createdAt).slice(0, 30))
-    .sort((a, b) => b.date.localeCompare(a.date) || b.createdAt - a.createdAt)
-
-  const remove = async (s: Session) => {
-    if (!(await confirm(`Excluir o treino "${s.name}" de ${fmtShort(s.date)}?`))) return
-    await db.sessions.delete(s.id)
-    toast('Treino excluído', { label: 'Desfazer', run: () => void db.sessions.put(s) })
-  }
+  const onDay = sel ? sessions.filter((s) => s.date === sel) : []
 
   return (
     <>
       <div className="row between">
-        <button onClick={() => shift(-1)}>‹</button>
-        <b style={{ textTransform: 'capitalize' }}>{first.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' })}</b>
-        <button onClick={() => shift(1)}>›</button>
+        <button onClick={() => shift(-1)} aria-label="mês anterior">‹</button>
+        <b>{month}</b>
+        <button onClick={() => shift(1)} aria-label="próximo mês">›</button>
       </div>
-      <p className="muted" style={{ textAlign: 'center' }}>{monthCount} treino(s) no mês</p>
+      <p className="muted small" style={{ textAlign: 'center' }}>{monthCount} treino(s) no mês</p>
       <div className="cal">
-        {['S', 'T', 'Q', 'Q', 'S', 'S', 'D'].map((d, i) => <div key={i} className="h">{d}</div>)}
+        {['s', 't', 'q', 'q', 's', 's', 'd'].map((d, i) => <div key={i} className="h">{d}</div>)}
         {Array.from({ length: lead }).map((_, i) => <div key={'b' + i} />)}
         {Array.from({ length: nDays }).map((_, i) => {
           const ds = `${month}-${String(i + 1).padStart(2, '0')}`
@@ -115,8 +161,18 @@ function Historico() {
           )
         })}
       </div>
+      {sel && onDay.length > 0 && (
+        <div className="card" style={{ marginTop: 10 }}>
+          {onDay.map((s) => (
+            <div key={s.id} className="item tap" onClick={() => setOpen(s.id)}>
+              <span className="grow">{s.name.toLowerCase()}</span>
+              <span className="muted small">{fmtShort(s.date)} · {s.entries.reduce((n, e) => n + e.sets.length, 0)} séries</span>
+            </div>
+          ))}
+        </div>
+      )}
 
-      <h2>Treinos por semana</h2>
+      <h2>treinos por semana</h2>
       <div className="card">
         {weeks.map((w) => (
           <div key={w.week} className="row" style={{ margin: '4px 0' }}>
@@ -127,20 +183,11 @@ function Historico() {
         ))}
       </div>
 
-      <h2>{sel ? `Treinos em ${fmtLong(sel)}` : 'Últimos treinos'}</h2>
-      {list.length === 0 && <p className="muted">Nenhum treino.</p>}
-      {list.map((s) => (
-        <div key={s.id} className="card row">
-          <div className="grow" onClick={() => setOpen(s.id)} style={{ cursor: 'pointer' }}>
-            <b>{s.name}</b>
-            <div className="muted small">{fmtLong(s.date)} · {s.entries.length} exercícios · {s.entries.reduce((n, e) => n + e.sets.length, 0)} séries</div>
-          </div>
-          <button className="ghost danger" aria-label="Excluir treino" onClick={() => remove(s)}>🗑️</button>
-        </div>
-      ))}
+      <h2>git log</h2>
+      <CommitLog limit={sel ? undefined : 60} />
       {open && (
-        <Sheet title="Treino" onClose={() => setOpen(null)}>
-          <SessionEditor id={open} active={false} onClose={() => setOpen(null)} />
+        <Sheet title="git show" onClose={() => setOpen(null)}>
+          <SessionEditor id={open} onClose={() => setOpen(null)} />
         </Sheet>
       )}
     </>
@@ -154,8 +201,8 @@ function Exercicios() {
   return (
     <>
       <div className="row">
-        <input placeholder="Buscar exercício…" value={q} onChange={(e) => setQ(e.target.value)} />
-        <button className="primary" onClick={() => setCreating(true)}>＋</button>
+        <input placeholder="buscar exercício…" value={q} onChange={(e) => setQ(e.target.value)} />
+        <button className="primary" aria-label="Novo exercício" onClick={() => setCreating(true)}>+</button>
       </div>
       <ExerciseList filterText={q} onPick={setDetail} />
       {detail && <ExerciseDetail exercise={detail} onClose={() => setDetail(null)} />}
@@ -176,20 +223,20 @@ function Rotinas() {
   const remove = async (r: Routine) => {
     if (!(await confirm(`Excluir a rotina "${r.name}"?`))) return
     await db.routines.delete(r.id)
-    toast('Rotina excluída', { label: 'Desfazer', run: () => void db.routines.put(r) })
+    toast('Rotina excluída', { label: 'desfazer', run: () => void db.routines.put(r) })
   }
   return (
     <>
-      <button className="primary block" onClick={create}>＋ Nova rotina</button>
+      <button className="primary block" onClick={create}>+ nova rotina</button>
       <div style={{ height: 12 }} />
-      {routines.length === 0 && <p className="muted">Ex.: “Treino A - Empurrar”.</p>}
+      {routines.length === 0 && <p className="muted"># ex.: "Treino A - Empurrar"</p>}
       {routines.map((r) => (
         <div key={r.id} className="card row">
           <div className="grow" onClick={() => setEditId(r.id)} style={{ cursor: 'pointer' }}>
             <b>{r.name}</b>
             <div className="muted small">{r.exerciseIds.length} exercícios</div>
           </div>
-          <button className="ghost danger" aria-label="Excluir rotina" onClick={() => remove(r)}>🗑️</button>
+          <button className="ghost danger" aria-label="Excluir rotina" onClick={() => remove(r)}>rm</button>
         </div>
       ))}
       {editId && <RoutineEditor id={editId} onClose={() => setEditId(null)} />}
@@ -213,21 +260,21 @@ function RoutineEditor({ id, onClose }: { id: string; onClose: () => void }) {
     save({ exerciseIds: a })
   }
   return (
-    <Sheet title="Rotina" onClose={onClose}>
+    <Sheet title="rotina" onClose={onClose}>
       <label className="f">
-        Nome
+        nome
         <input value={routine.name} onChange={(e) => save({ name: e.target.value })} />
       </label>
-      <h2>Exercícios</h2>
+      <h2>exercícios</h2>
       {routine.exerciseIds.map((eid, i) => (
         <div key={eid} className="item">
           <span className="grow">{byId.get(eid)?.name ?? '(removido)'}</span>
           <button className="small" aria-label="Subir" onClick={() => move(i, -1)}>↑</button>
           <button className="small" aria-label="Descer" onClick={() => move(i, 1)}>↓</button>
-          <button className="small danger" aria-label="Tirar da rotina" onClick={() => save({ exerciseIds: routine.exerciseIds.filter((x) => x !== eid) })}>✕</button>
+          <button className="small danger" aria-label="Tirar da rotina" onClick={() => save({ exerciseIds: routine.exerciseIds.filter((x) => x !== eid) })}>×</button>
         </div>
       ))}
-      <button className="block" style={{ marginTop: 10 }} onClick={() => setPicking(true)}>+ Adicionar exercício</button>
+      <button className="block" style={{ marginTop: 10 }} onClick={() => setPicking(true)}>+ exercício</button>
       {picking && (
         <ExercisePicker onClose={() => setPicking(false)}
           onPick={(e) => !routine.exerciseIds.includes(e.id) && save({ exerciseIds: [...routine.exerciseIds, e.id] })} />
@@ -235,4 +282,3 @@ function RoutineEditor({ id, onClose }: { id: string; onClose: () => void }) {
     </Sheet>
   )
 }
-
