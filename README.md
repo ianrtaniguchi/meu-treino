@@ -95,7 +95,7 @@ Estética “GitHub dark + terminal”: minimalista, silenciosa e densa. Tokens 
 - **Paleta**: fundo `#0d1117`, superfície `#161b22`, bordas `#30363d`, texto `#e6edf3` / `#8b949e`. Verde `#39d353` é a única cor de destaque; escala do heatmap `#161b22 → #0e4429 → #006d32 → #26a641 → #39d353`. Vermelho/âmbar só para alertas e metas estouradas.
 - **Tipografia**: JetBrains Mono empacotada localmente (`@fontsource/jetbrains-mono`, pesos 400/600/700, sem CDN → funciona offline), `tabular-nums` em tudo. Hierarquia por tamanho e peso; títulos em minúsculas com tom de terminal (`~/treino`, `~/dieta`, `~/corpo`, `~/config`).
 - **Sem emojis**, sem gradientes, cantos de 6px. Ícones da barra inferior em SVG (traço 1.5). Sub-abas são texto com sublinhado verde.
-- **Safe area** só na barra inferior (e no rodapé do modo foco, que cobre a tela toda). A status bar é `black` (não translúcida), então o topo não precisa de inset.
+- **Safe area**: `viewport-fit=cover` com `apple-mobile-web-app-status-bar-style="black-translucent"`, `env(safe-area-inset-top)` no topo de `.scroll`/`.focus` e `env(safe-area-inset-bottom)` na barra inferior fixa (`position: fixed`).
 - **Movimento**: transições de até 150ms; `prefers-reduced-motion` desliga todas.
 - **Modo foco** (durante o treino): tela cheia, um exercício por vez, steppers com botões de 56px, “última vez” ao lado, `$ concluir série`, descanso como contagem regressiva grande com barra fina, sem popups.
 - **Log estilo commits**: `chore: treino b concluído` + linhas `feat: flexão diamante 4x12 +10kg [PR]`, com data relativa. `[PR]` aparece quando a série superou todo o histórico anterior do exercício (a primeira vez de um exercício não conta).
