@@ -28,14 +28,6 @@ const TABS: Tab[] = ['treino', 'dieta', 'corpo', 'assistente', 'config']
 const WEEK = 7 * 24 * 3600 * 1000
 const BOOT_MAX_MS = 520
 
-function syncViewportHeightVar() {
-  if (typeof window === 'undefined' || typeof document === 'undefined') return
-  const h = window.visualViewport?.height ? Math.max(window.innerHeight, Math.round(window.visualViewport.height)) : window.innerHeight
-  if (h > 0) {
-    document.documentElement.style.setProperty('--vh', `${h}px`)
-  }
-}
-
 export default function App() {
   const [ready, setReady] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -59,24 +51,6 @@ export default function App() {
     lastUnlockedAt: null,
     hiddenAt: null,
   })
-
-  // Recalcula --vh na abertura e ao voltar ao primeiro plano / redimensionar (iOS standalone)
-  useEffect(() => {
-    syncViewportHeightVar()
-    const onViewportChange = () => {
-      syncViewportHeightVar()
-    }
-    window.addEventListener('resize', onViewportChange)
-    window.addEventListener('orientationchange', onViewportChange)
-    window.addEventListener('pageshow', onViewportChange)
-    window.visualViewport?.addEventListener('resize', onViewportChange)
-    return () => {
-      window.removeEventListener('resize', onViewportChange)
-      window.removeEventListener('orientationchange', onViewportChange)
-      window.removeEventListener('pageshow', onViewportChange)
-      window.visualViewport?.removeEventListener('resize', onViewportChange)
-    }
-  }, [])
 
   useEffect(() => {
     const timer = window.setTimeout(() => setBootVisible(false), BOOT_MAX_MS)
@@ -119,7 +93,6 @@ export default function App() {
     }
 
     const onVisible = async () => {
-      syncViewportHeightVar()
       const cfg = await getLockConfig()
       if (!cfg.enabled) return
       const hiddenAt = (await getPersistedHiddenAt()) ?? cfg.hiddenAt
@@ -205,7 +178,7 @@ export default function App() {
       {isCurrentlyLocked && (
         <LockScreen config={lockConfig} onUnlocked={handleUnlocked} />
       )}
-      <div
+      <main
         className="scroll"
         style={isCurrentlyLocked ? { visibility: 'hidden', pointerEvents: 'none' } : undefined}
         aria-hidden={isCurrentlyLocked}
@@ -220,7 +193,7 @@ export default function App() {
         {tab === 'corpo' && <Corpo />}
         {tab === 'assistente' && <Assistente />}
         {tab === 'config' && <Config />}
-      </div>
+      </main>
       <nav
         className="tabbar"
         style={isCurrentlyLocked ? { visibility: 'hidden', pointerEvents: 'none' } : undefined}
