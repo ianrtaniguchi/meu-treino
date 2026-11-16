@@ -14,7 +14,7 @@ export default function Chart({ data, name = 'valor', name2 = 'média', unit = '
           <XAxis dataKey="x" stroke="#8b949e" tick={mono} tickLine={false} axisLine={{ stroke: '#30363d' }} />
           <YAxis stroke="#8b949e" tick={mono} tickLine={false} axisLine={false} domain={['auto', 'auto']} />
           <Tooltip
-            contentStyle={{ background: '#161b22', border: '1px solid #30363d', borderRadius: 6, ...mono }}
+            contentStyle={{ background: '#161b22', border: '1px solid #30363d', borderRadius: 10, ...mono }}
             labelStyle={{ color: '#8b949e' }}
             formatter={(v: number, n: string) => [`${Math.round(v * 10) / 10}${unit}`, n]}
           />

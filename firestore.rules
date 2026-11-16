@@ -1,0 +1,21 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Documento raiz do usuário (guarda groqApiKey editada apenas pelo console do Firebase).
+    // Leitura permitida apenas ao próprio UID autorizado (usado pelo Cloudflare Worker via REST);
+    // escrita bloqueada para clientes (allow write: if false).
+    match /users/{uid} {
+      allow read: if request.auth != null && request.auth.uid == uid && uid == '[SEU_UID]';
+      allow write: if false;
+
+      // Subcoleções de sincronização do app (ex.: records/{id})
+      match /records/{id} {
+        allow read, write: if request.auth != null && request.auth.uid == uid && uid == '[SEU_UID]';
+      }
+
+      match /{subcollection}/{docId=**} {
+        allow read, write: if request.auth != null && request.auth.uid == uid && uid == '[SEU_UID]';
+      }
+    }
+  }
+}

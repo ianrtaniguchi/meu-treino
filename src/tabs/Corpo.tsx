@@ -1,6 +1,7 @@
 import { useLiveQuery } from 'dexie-react-hooks'
 import { useMemo, useState } from 'react'
 import Chart from '../components/Chart'
+import { PromptTitle } from '../components/TerminalChrome'
 import { Field, useUi } from '../components/ui'
 import { db } from '../data/db'
 import { fmtNum, fmtShort, movingAverage, num, today } from '../data/stats'
@@ -50,7 +51,7 @@ export default function Corpo() {
 
   return (
     <>
-      <h1>~/corpo</h1>
+      <PromptTitle path="~/corpo" />
       <div className="card stack">
         <Field label="Data" type="date" value={date} mode="text" onChange={setDate} />
         <Field label={`Peso (kg)${existing?.weight ? ` — atual: ${fmtNum(existing.weight)}` : ''}`} value={weight} onChange={setWeight} />

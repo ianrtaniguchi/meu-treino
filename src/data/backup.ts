@@ -1,18 +1,21 @@
-import { DB_VERSION, db, migrateBodyV2, migrateSessionV2, uid } from './db'
-import { TABLE_NAMES, type Backup, type Snapshot, type SnapshotKind, type TableName } from './types'
+import { DB_VERSION, SYNCABLE_SETTINGS, db, migrateBodyV2, migrateRecordV3, migrateSessionV2, pkOf, recordDocId, runApplyingRemote, uid } from './db'
+import { LOCK_SETTING_KEYS } from '../lib/lock'
+import { TABLE_NAMES, type Backup, type OutboxEntry, type Snapshot, type SnapshotKind, type TableName } from './types'
 
 export const BACKUP_APP_ID = 'meu-treino-pwa'
 export const MAX_SNAPSHOTS_PER_KIND = 5
 const WEEK_MS = 7 * 24 * 3600 * 1000
 
-const pkOf = (table: TableName) => (table === 'settings' ? 'key' : 'id')
 const tableOf = (name: TableName) => db.table(name)
 
-/** Lê todas as tabelas (exceto snapshots) para um objeto de backup. */
+/** Lê todas as tabelas (exceto snapshots e chaves de tranca local) para um objeto de backup. */
 export async function buildBackup(): Promise<Backup> {
   const tables = {} as Backup['tables']
   await db.transaction('r', TABLE_NAMES.map(tableOf), async () => {
-    for (const t of TABLE_NAMES) tables[t] = await tableOf(t).toArray()
+    for (const t of TABLE_NAMES) {
+      const rows = await tableOf(t).toArray()
+      tables[t] = t === 'settings' ? rows.filter((r: any) => !LOCK_SETTING_KEYS.has(String(r.key))) : rows
+    }
   })
   return { app: BACKUP_APP_ID, schemaVersion: DB_VERSION, exportedAt: new Date().toISOString(), tables }
 }
@@ -62,6 +65,12 @@ export function parseBackup(text: string): Backup {
     tables.sessions = tables.sessions.map(migrateSessionV2)
     tables.body = tables.body.map(migrateBodyV2)
   }
+  if (v < 3) {
+    const now = Date.now()
+    for (const t of TABLE_NAMES) {
+      tables[t] = tables[t].map((r) => migrateRecordV3(r, now))
+    }
+  }
   return { app: BACKUP_APP_ID, schemaVersion: DB_VERSION, exportedAt: String(raw.exportedAt ?? ''), tables }
 }
 
@@ -84,36 +93,76 @@ export function previewBackup(b: Backup): BackupPreview {
 
 export type ImportMode = 'merge' | 'replace'
 
+function buildOutboxForRows(table: TableName, rows: any[], now = Date.now()): OutboxEntry[] {
+  const pkField = pkOf(table)
+  const out: OutboxEntry[] = []
+  for (const r of rows) {
+    if (!r || typeof r !== 'object') continue
+    if (table === 'settings' && !SYNCABLE_SETTINGS.has(String(r.key))) continue
+    if ((table === 'exercises' || table === 'foods') && r.builtin && r.updatedAt === 1 && !r.deleted) continue
+    const pk = String(r[pkField])
+    out.push({
+      id: recordDocId(table, pk),
+      table,
+      pk,
+      updatedAt: typeof r.updatedAt === 'number' ? r.updatedAt : now,
+      attempts: 0,
+    })
+  }
+  return out
+}
+
 /**
  * Importa um backup já validado.
- *  - replace: cria snapshot de segurança, apaga tudo e grava o conteúdo do backup.
+ *  - replace: cria snapshot de segurança, apaga tudo (preservando credenciais locais de Face ID/PIN) e grava o conteúdo do backup.
  *  - merge: só adiciona registros cujo id ainda não existe (o que já está no aparelho prevalece).
  */
 export async function importBackup(b: Backup, mode: ImportMode): Promise<void> {
   if (mode === 'replace') await createSnapshot('seguranca', 'Antes de substituir dados (importação)')
-  await db.transaction('rw', TABLE_NAMES.map(tableOf), async () => {
+  await db.transaction('rw', [...TABLE_NAMES.map(tableOf), db.outbox], async () => {
+    if (mode === 'replace') await runApplyingRemote(() => db.outbox.clear())
+    const outbox: OutboxEntry[] = []
     for (const t of TABLE_NAMES) {
       const table = tableOf(t)
-      const rows = b.tables[t]
+      // Nunca aceita nem sobrescreve chaves locais de Face ID / PIN vindas de um arquivo externo
+      const rows = t === 'settings' ? b.tables[t].filter((r: any) => !LOCK_SETTING_KEYS.has(String(r.key))) : b.tables[t]
       if (mode === 'replace') {
-        await table.clear()
-        await table.bulkPut(rows)
+        const preservedLock =
+          t === 'settings'
+            ? (await runApplyingRemote(() => table.toArray())).filter((r: any) => LOCK_SETTING_KEYS.has(String(r.key)))
+            : []
+        await runApplyingRemote(() => table.clear())
+        await runApplyingRemote(() => table.bulkPut([...rows, ...preservedLock]))
+        outbox.push(...buildOutboxForRows(t, rows))
       } else {
         const pk = pkOf(t)
-        const existing = new Set((await table.toCollection().primaryKeys()) as string[])
-        await table.bulkPut(rows.filter((r) => !existing.has(r[pk])))
+        const existing = new Set((await table.toArray()).map((r: any) => String(r[pk])))
+        const toAdd = rows.filter((r) => !existing.has(String(r[pk])))
+        await runApplyingRemote(() => table.bulkPut(toAdd))
+        outbox.push(...buildOutboxForRows(t, toAdd))
       }
     }
+    if (outbox.length > 0) await runApplyingRemote(() => db.outbox.bulkPut(outbox))
   })
 }
 
 /** Substitui todos os dados pelo conteúdo de um backup, sem snapshot (uso interno). */
 async function replaceAll(b: Backup) {
-  await db.transaction('rw', TABLE_NAMES.map(tableOf), async () => {
+  await db.transaction('rw', [...TABLE_NAMES.map(tableOf), db.outbox], async () => {
+    await runApplyingRemote(() => db.outbox.clear())
+    const outbox: OutboxEntry[] = []
     for (const t of TABLE_NAMES) {
-      await tableOf(t).clear()
-      await tableOf(t).bulkPut(b.tables[t])
+      const table = tableOf(t)
+      const rows = t === 'settings' ? b.tables[t].filter((r: any) => !LOCK_SETTING_KEYS.has(String(r.key))) : b.tables[t]
+      const preservedLock =
+        t === 'settings'
+          ? (await runApplyingRemote(() => table.toArray())).filter((r: any) => LOCK_SETTING_KEYS.has(String(r.key)))
+          : []
+      await runApplyingRemote(() => table.clear())
+      await runApplyingRemote(() => table.bulkPut([...rows, ...preservedLock]))
+      outbox.push(...buildOutboxForRows(t, rows))
     }
+    if (outbox.length > 0) await runApplyingRemote(() => db.outbox.bulkPut(outbox))
   })
 }
 

@@ -1,5 +1,6 @@
 import { useLiveQuery } from 'dexie-react-hooks'
 import { useMemo, useState } from 'react'
+import { PromptTitle } from '../components/TerminalChrome'
 import { Field, Progress, Seg, Sheet, useUi } from '../components/ui'
 import { db, setSetting, uid } from '../data/db'
 import { DEFAULT_GOALS } from '../data/seed'
@@ -60,7 +61,7 @@ export default function Dieta() {
 
   return (
     <>
-      <h1>~/dieta</h1>
+      <PromptTitle path="~/dieta" />
       <div className="row between">
         <button onClick={() => setDate(addDays(date, -1))}>‹</button>
         <b>{date === today() ? 'hoje' : fmtLong(date)}</b>

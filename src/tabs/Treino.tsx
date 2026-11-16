@@ -5,6 +5,7 @@ import { ExerciseDetail, ExerciseForm, ExerciseList, ExercisePicker } from '../c
 import FocusMode from '../components/FocusMode'
 import Heatmap, { heatRange } from '../components/Heatmap'
 import SessionEditor from '../components/SessionEditor'
+import { PromptTitle, Statusline } from '../components/TerminalChrome'
 import { Seg, Sheet, useUi } from '../components/ui'
 import { db, setSetting, uid } from '../data/db'
 import { DEFAULT_GOALS } from '../data/seed'
@@ -19,7 +20,8 @@ export default function Treino() {
   const [sub, setSub] = useState<Sub>('painel')
   return (
     <>
-      <h1>~/treino</h1>
+      <Statusline />
+      <PromptTitle path="~/treino" />
       <Seg<Sub>
         value={sub}
         onChange={setSub}

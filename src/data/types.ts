@@ -2,7 +2,14 @@
 
 export type Measure = 'reps' | 'time'
 
-export interface Exercise {
+export interface SyncMeta {
+  /** Timestamp em ms da última atualização local ou remota (last-write-wins). */
+  updatedAt?: number
+  /** Soft delete para propagação entre aparelhos. */
+  deleted?: boolean
+}
+
+export interface Exercise extends SyncMeta {
   id: string
   name: string
   category: string
@@ -27,7 +34,7 @@ export interface SessionExercise {
   sets: SetEntry[]
 }
 
-export interface Session {
+export interface Session extends SyncMeta {
   id: string
   date: string
   name: string
@@ -38,13 +45,13 @@ export interface Session {
   finishedAt?: number
 }
 
-export interface Routine {
+export interface Routine extends SyncMeta {
   id: string
   name: string
   exerciseIds: string[]
 }
 
-export interface Food {
+export interface Food extends SyncMeta {
   id: string
   name: string
   /** porção de referência, ex.: "100 g" */
@@ -68,7 +75,7 @@ export interface MealItem {
 
 export type MealType = 'cafe' | 'almoco' | 'jantar' | 'lanche'
 
-export interface Meal {
+export interface Meal extends SyncMeta {
   id: string
   date: string
   type: MealType
@@ -76,7 +83,7 @@ export interface Meal {
   createdAt: number
 }
 
-export interface BodyEntry {
+export interface BodyEntry extends SyncMeta {
   /** um registro por data: id = "body-AAAA-MM-DD" */
   id: string
   date: string
@@ -84,7 +91,7 @@ export interface BodyEntry {
   measures: Record<string, number>
 }
 
-export interface Setting {
+export interface Setting extends SyncMeta {
   key: string
   value: unknown
 }
@@ -101,6 +108,26 @@ export interface Snapshot {
 
 export const TABLE_NAMES = ['exercises', 'routines', 'sessions', 'foods', 'meals', 'body', 'settings'] as const
 export type TableName = (typeof TABLE_NAMES)[number]
+
+/** Entrada na fila de envio (outbox) para sincronização com o Firestore. */
+export interface OutboxEntry {
+  /** Identificador único no formato "${table}:${pk}" */
+  id: string
+  table: TableName
+  pk: string
+  updatedAt: number
+  attempts: number
+}
+
+/** Documento em users/{uid}/records/{id} no Firestore. */
+export interface CloudRecord {
+  id: string
+  table: TableName
+  pk: string
+  updatedAt: number
+  deleted: boolean
+  payload: Record<string, any>
+}
 
 export interface Backup {
   app: string

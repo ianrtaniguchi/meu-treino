@@ -1,4 +1,4 @@
-import { db, getSetting, setSetting } from './db'
+import { db, getSetting } from './db'
 import type { Exercise, Food, Goals } from './types'
 
 export const SEED_VERSION = 1
@@ -64,11 +64,11 @@ export async function ensureSeed(): Promise<void> {
   await db.transaction('rw', db.exercises, db.foods, db.settings, async () => {
     const ex = new Set((await db.exercises.toCollection().primaryKeys()) as string[])
     const fd = new Set((await db.foods.toCollection().primaryKeys()) as string[])
-    await db.exercises.bulkAdd(BUILTIN_EXERCISES.filter((e) => !ex.has(e.id)))
-    await db.foods.bulkAdd(BUILTIN_FOODS.filter((f) => !fd.has(f.id)))
-    await setSetting('seedVersion', SEED_VERSION)
-    if ((await db.settings.get('goals')) === undefined) await setSetting('goals', DEFAULT_GOALS)
-    if ((await db.settings.get('restSeconds')) === undefined) await setSetting('restSeconds', 90)
-    if ((await db.settings.get('firstUseAt')) === undefined) await setSetting('firstUseAt', Date.now())
+    await db.exercises.bulkAdd(BUILTIN_EXERCISES.filter((e) => !ex.has(e.id)).map((e) => ({ ...e, _seedInit: true, updatedAt: 1 } as any)))
+    await db.foods.bulkAdd(BUILTIN_FOODS.filter((f) => !fd.has(f.id)).map((f) => ({ ...f, _seedInit: true, updatedAt: 1 } as any)))
+    await db.settings.put({ key: 'seedVersion', value: SEED_VERSION, _seedInit: true, updatedAt: 1 } as any)
+    if ((await db.settings.get('goals')) === undefined) await db.settings.put({ key: 'goals', value: DEFAULT_GOALS, _seedInit: true, updatedAt: 1 } as any)
+    if ((await db.settings.get('restSeconds')) === undefined) await db.settings.put({ key: 'restSeconds', value: 90, _seedInit: true, updatedAt: 1 } as any)
+    if ((await db.settings.get('firstUseAt')) === undefined) await db.settings.put({ key: 'firstUseAt', value: Date.now(), _seedInit: true, updatedAt: 1 } as any)
   })
 }

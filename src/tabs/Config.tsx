@@ -1,21 +1,47 @@
 import { useLiveQuery } from 'dexie-react-hooks'
 import { useEffect, useRef, useState } from 'react'
-import { Seg, Sheet, useUi } from '../components/ui'
+import { PromptTitle } from '../components/TerminalChrome'
+import { Field, Seg, Sheet, useUi } from '../components/ui'
 import {
   BackupError, createSnapshot, exportBackupToFile, importBackup, listSnapshots, parseBackup, previewBackup,
   restoreSnapshot, type ImportMode,
 } from '../data/backup'
-import { setSetting } from '../data/db'
+import { db, setSetting } from '../data/db'
+import { authResetPassword, authSignIn, authSignOut, triggerBackgroundSync } from '../data/sync'
 import type { Backup } from '../data/types'
-import { useSetting } from '../hooks'
+import { useSetting, useSyncStatus } from '../hooks'
+import {
+  DEFAULT_LOCK_TIMEOUT_MINUTES,
+  disableLock,
+  getLockConfig,
+  isPlatformWebAuthnSupported,
+  isValidPin,
+  registerBiometricCredential,
+  saveLockSetup,
+  setLockTimeoutMinutes,
+} from '../lib/lock'
 
 const fmtDateTime = (t: number | string) => new Date(t).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })
 const mb = (n?: number) => (n === undefined ? '—' : `${(n / 1024 / 1024).toFixed(2)} MB`)
 const KIND: Record<string, string> = { auto: 'Automático', seguranca: 'Segurança', manual: 'Manual' }
 
+function authErrorMsg(err: unknown): string {
+  const code = (err as { code?: string })?.code ?? ''
+  if (code.includes('invalid-email')) return 'E-mail inválido.'
+  if (code.includes('user-not-found') || code.includes('invalid-credential') || code.includes('wrong-password')) return 'E-mail ou senha incorretos.'
+  if (code.includes('email-already-in-use')) return 'Este e-mail já está cadastrado.'
+  if (code.includes('weak-password')) return 'A senha precisa ter pelo menos 6 caracteres.'
+  if (code.includes('network-request-failed')) return 'Sem conexão com a internet.'
+  if (code.includes('too-many-requests')) return 'Muitas tentativas. Aguarde alguns minutos.'
+  return 'Não foi possível concluir a operação. Verifique a conexão e tente novamente.'
+}
+
 export default function Config() {
   const { toast, confirm } = useUi()
   const lastBackup = useSetting<number | null>('lastBackupAt', null)
+  const lastSyncAt = useSetting<number | null>('lastSyncAt', null)
+  const pendingOutbox = useLiveQuery(() => db.outbox.count(), [], 0)
+  const syncStatus = useSyncStatus()
   const [persisted, setPersisted] = useState<boolean | null>(null)
   const [usage, setUsage] = useState<{ used?: number; quota?: number }>({})
   const [pending, setPending] = useState<Backup | null>(null)
@@ -23,6 +49,21 @@ export default function Config() {
   const [busy, setBusy] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
   const snaps = useLiveQuery(() => listSnapshots(), [], [])
+
+  // Estado de formulário Auth (criação de conta desativada na UI)
+  const [authMode, setAuthMode] = useState<'login' | 'reset'>('login')
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [authBusy, setAuthBusy] = useState(false)
+  const [authErr, setAuthErr] = useState('')
+
+  // Estado de tranca por Face ID + PIN reserva
+  const lockConfig = useLiveQuery(() => getLockConfig(), [])
+  const [setupOpen, setSetupOpen] = useState(false)
+  const [pin1, setPin1] = useState('')
+  const [pin2, setPin2] = useState('')
+  const [lockBusy, setLockBusy] = useState(false)
+  const [lockErr, setLockErr] = useState('')
 
   const refreshStorage = async () => {
     setPersisted((await navigator.storage?.persisted?.()) ?? false)
@@ -35,6 +76,87 @@ export default function Config() {
     const ok = (await navigator.storage?.persist?.()) ?? false
     toast(ok ? 'Armazenamento persistente ativado' : 'O iOS não concedeu (instale na Tela de Início e tente de novo)')
     void refreshStorage()
+  }
+
+  const submitAuth = async () => {
+    setAuthErr('')
+    if (!email.trim()) return setAuthErr('Informe seu e-mail.')
+    if (authMode !== 'reset' && password.length < 6) return setAuthErr('A senha deve ter pelo menos 6 caracteres.')
+    setAuthBusy(true)
+    try {
+      if (authMode === 'login') {
+        await authSignIn(email, password)
+        setPassword('')
+        toast('Sessão iniciada')
+      } else {
+        await authResetPassword(email)
+        toast('E-mail de redefinição enviado')
+        setAuthMode('login')
+      }
+    } catch (e) {
+      setAuthErr(authErrorMsg(e))
+    } finally {
+      setAuthBusy(false)
+    }
+  }
+
+  const openLockSetup = () => {
+    setPin1('')
+    setPin2('')
+    setLockErr('')
+    setSetupOpen(true)
+  }
+
+  const confirmEnableLock = async () => {
+    setLockErr('')
+    if (!isValidPin(pin1)) {
+      setLockErr('error: o PIN reserva deve ter de 4 a 6 dígitos numéricos.')
+      return
+    }
+    if (pin1 !== pin2) {
+      setLockErr('error: os PINs informados não conferem.')
+      return
+    }
+    if (!isPlatformWebAuthnSupported()) {
+      setLockErr('error: WebAuthn / Face ID indisponível neste navegador.')
+      return
+    }
+    setLockBusy(true)
+    try {
+      // Chamada direta a partir do toque do usuário (exigência do iOS)
+      const credId = await registerBiometricCredential()
+      await saveLockSetup(credId, pin1, lockConfig?.timeoutMinutes ?? DEFAULT_LOCK_TIMEOUT_MINUTES)
+      setSetupOpen(false)
+      setPin1('')
+      setPin2('')
+      toast('Bloqueio com Face ID ativado')
+    } catch (e) {
+      const msg = (e as Error)?.message || 'falha ao registrar Face ID.'
+      setLockErr(msg.startsWith('error:') ? msg : `error: ${msg}`)
+    } finally {
+      setLockBusy(false)
+    }
+  }
+
+  const handleToggleLock = async () => {
+    if (lockConfig?.enabled) {
+      if (!(await confirm('Desativar o bloqueio com Face ID e remover o PIN reserva deste aparelho?', 'desativar', false))) return
+      await disableLock()
+      toast('Bloqueio com Face ID desativado')
+    } else {
+      openLockSetup()
+    }
+  }
+
+  const doSignOut = async () => {
+    if (!(await confirm('Sair da conta? Os dados locais continuam salvos neste aparelho.', 'sair', false))) return
+    await authSignOut()
+    toast('Você saiu da conta (modo local ativo)')
+  }
+
+  const doSyncNow = async () => {
+    await triggerBackgroundSync(false)
+    toast('Sincronização concluída')
   }
 
   const doExport = async () => {
@@ -94,15 +216,100 @@ export default function Config() {
 
   return (
     <>
-      <h1>~/config</h1>
+      <PromptTitle path="~/config" />
 
-      <h2>armazenamento</h2>
+      <h2>sincronização em nuvem</h2>
+      {syncStatus.user ? (
+        <div className="card stack">
+          <div className="row between">
+            <span className="muted small">logado como</span>
+            <b className="green">{syncStatus.user.email ?? syncStatus.user.uid}</b>
+          </div>
+          <div className="row between">
+            <span className="muted small">última sincronização</span>
+            <b>{lastSyncAt ? fmtDateTime(lastSyncAt) : 'nunca'}</b>
+          </div>
+          <div className="row between">
+            <span className="muted small">itens pendentes</span>
+            <b className={pendingOutbox > 0 ? 'amber' : ''}>{pendingOutbox}</b>
+          </div>
+          {syncStatus.error && <div className="small red">{syncStatus.error}</div>}
+          <div className="grid2">
+            <button className="primary" disabled={syncStatus.syncing} onClick={() => void doSyncNow()}>
+              {syncStatus.syncing ? 'sincronizando…' : '$ sincronizar agora'}
+            </button>
+            <button onClick={() => void doSignOut()}>sair</button>
+          </div>
+          <p className="muted small" style={{ margin: 0 }}>
+            Sair não apaga os dados locais deste aparelho.
+          </p>
+        </div>
+      ) : (
+        <div className="card stack">
+          <Seg
+            value={authMode}
+            onChange={(v) => { setAuthMode(v); setAuthErr('') }}
+            options={[['login', 'entrar'], ['reset', 'redefinir senha']]}
+          />
+          <Field label="e-mail" type="email" mode="text" value={email} onChange={setEmail} placeholder="voce@exemplo.com" />
+          {authMode !== 'reset' && (
+            <Field label="senha" type="password" mode="text" value={password} onChange={setPassword} placeholder="mín. 6 caracteres" />
+          )}
+          {authErr && <div className="small red">{authErr}</div>}
+          <button className="primary block" disabled={authBusy} onClick={() => void submitAuth()}>
+            {authBusy
+              ? 'aguarde…'
+              : authMode === 'login'
+                ? '$ entrar'
+                : '$ enviar link de redefinição'}
+          </button>
+          <p className="muted small" style={{ margin: 0 }}>
+            Modo offline-first: você pode usar o app sem conta; entre quando quiser sincronizar com a nuvem ({pendingOutbox} pendente(s) na fila local).
+          </p>
+        </div>
+      )}
+
+      <h2>segurança</h2>
       <div className="card stack">
-        <div className="row between"><span>Armazenamento persistente</span><b style={{ color: persisted ? 'var(--accent)' : 'var(--amber)' }}>{persisted === null ? '…' : persisted ? 'Sim' : 'Não'}</b></div>
-        <div className="row between"><span>Em uso</span><b>{mb(usage.used)}</b></div>
-        <div className="row between"><span>Cota estimada</span><b>{mb(usage.quota)}</b></div>
-        {persisted === false && <button className="block" onClick={requestPersist}>Pedir armazenamento persistente</button>}
-        <p className="muted small" style={{ margin: 0 }}>Mesmo persistente, faça backups: é a sua garantia contra perda de dados.</p>
+        <div className="row between">
+          <div className="grow">
+            bloquear com Face ID
+            <div className="muted small">
+              {lockConfig?.enabled ? 'ativo neste aparelho (WebAuthn + PIN)' : 'desativado'}
+            </div>
+          </div>
+          <button
+            className={lockConfig?.enabled ? '' : 'primary'}
+            onClick={() => void handleToggleLock()}
+          >
+            {lockConfig?.enabled ? 'desativar' : '$ ativar'}
+          </button>
+        </div>
+
+        <div className="row between">
+          <div className="grow">
+            bloquear após segundo plano
+            <div className="muted small">tempo fora do app até pedir desbloqueio (min)</div>
+          </div>
+          <button
+            aria-label="menos minutos"
+            onClick={() => void setLockTimeoutMinutes(Math.max(0, (lockConfig?.timeoutMinutes ?? DEFAULT_LOCK_TIMEOUT_MINUTES) - 1))}
+          >
+            -
+          </button>
+          <b style={{ width: 28, textAlign: 'center' }}>
+            {lockConfig?.timeoutMinutes ?? DEFAULT_LOCK_TIMEOUT_MINUTES}
+          </b>
+          <button
+            aria-label="mais minutos"
+            onClick={() => void setLockTimeoutMinutes(Math.min(60, (lockConfig?.timeoutMinutes ?? DEFAULT_LOCK_TIMEOUT_MINUTES) + 1))}
+          >
+            +
+          </button>
+        </div>
+        <p className="muted small" style={{ margin: 0 }}>
+          A credencial biométrica e o hash do PIN ficam apenas neste aparelho (não vão para o Firestore nem para o backup).
+        </p>
       </div>
 
       <h2>backup</h2>
@@ -114,6 +321,15 @@ export default function Config() {
         <button className="block" disabled={busy} onClick={() => fileRef.current?.click()}>$ importar backup…</button>
         <input ref={fileRef} type="file" accept="application/json,.json" hidden onChange={(e) => void onFile(e.target.files?.[0])} />
         {error && <div style={{ color: 'var(--red)' }}>{error}</div>}
+      </div>
+
+      <h2>armazenamento</h2>
+      <div className="card stack">
+        <div className="row between"><span>Armazenamento persistente</span><b style={{ color: persisted ? 'var(--green)' : 'var(--amber)' }}>{persisted === null ? '…' : persisted ? 'Sim' : 'Não'}</b></div>
+        <div className="row between"><span>Em uso</span><b>{mb(usage.used)}</b></div>
+        <div className="row between"><span>Cota estimada</span><b>{mb(usage.quota)}</b></div>
+        {persisted === false && <button className="block" onClick={requestPersist}>Pedir armazenamento persistente</button>}
+        <p className="muted small" style={{ margin: 0 }}>Mesmo persistente e com nuvem, exporte backups em JSON periodicamente.</p>
       </div>
 
       <h2>snapshots internos</h2>
@@ -142,7 +358,19 @@ export default function Config() {
         </div>
       </div>
 
-      <p className="muted small" style={{ textAlign: 'center', marginTop: 20 }}>Meu Treino · dados apenas neste aparelho · sem rede</p>
+      <h2>privacidade (assistente de ia)</h2>
+      <div className="card stack">
+        <p className="muted small" style={{ margin: 0 }}>
+          Ao conversar na aba <b>~/assistente</b>, suas mensagens e apenas os resumos necessários dos seus dados locais (como treinos recentes, dieta do período ou peso, listados abaixo de cada resposta) são transmitidos via HTTPS pelo seu proxy no <b>Cloudflare Workers</b> e processados pela API do <b>Groq</b> para gerar a resposta.
+        </p>
+        <p className="muted small" style={{ margin: 0 }}>
+          O banco completo nunca é enviado, o histórico do chat fica salvo somente neste aparelho (fora do backup e do Firestore) e nenhuma escrita sugerida pela IA é gravada sem o seu toque explícito em confirmar.
+        </p>
+      </div>
+
+      <p className="muted small" style={{ textAlign: 'center', marginTop: 20 }}>
+        Meu Treino · offline-first · {syncStatus.user ? 'sincronizado' : 'modo local'}
+      </p>
 
       {pending && p && (
         <Sheet title="Importar backup" onClose={() => setPending(null)}>
@@ -163,6 +391,40 @@ export default function Config() {
           <button className={mode === 'replace' ? 'danger block' : 'primary block'} disabled={busy} onClick={() => doImport(mode)}>
             {mode === 'replace' ? 'Substituir tudo' : 'Mesclar'}
           </button>
+        </Sheet>
+      )}
+
+      {setupOpen && (
+        <Sheet title="ativar bloqueio com Face ID" onClose={() => !lockBusy && setSetupOpen(false)}>
+          <div className="stack">
+            <p className="muted small" style={{ marginTop: 0 }}>
+              Defina um PIN numérico de 4 a 6 dígitos como reserva caso o Face ID falhe. Apenas o hash PBKDF2 com salt é salvo localmente.
+            </p>
+            <Field
+              label="PIN reserva (4 a 6 dígitos)"
+              type="password"
+              mode="numeric"
+              value={pin1}
+              onChange={(v) => setPin1(v.replace(/\D/g, '').slice(0, 6))}
+              placeholder="••••"
+            />
+            <Field
+              label="confirmar PIN reserva"
+              type="password"
+              mode="numeric"
+              value={pin2}
+              onChange={(v) => setPin2(v.replace(/\D/g, '').slice(0, 6))}
+              placeholder="••••"
+            />
+            {lockErr && <div className="lock-error">{lockErr}</div>}
+            <button
+              className="primary block"
+              disabled={lockBusy}
+              onClick={() => void confirmEnableLock()}
+            >
+              {lockBusy ? 'aguardando Face ID…' : '$ registrar Face ID e ativar'}
+            </button>
+          </div>
         </Sheet>
       )}
     </>

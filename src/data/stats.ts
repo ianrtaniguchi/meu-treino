@@ -3,7 +3,7 @@ import type { Exercise, Meal, MealItem, Session, SetEntry } from './types'
 // ---------- Datas (locais, "AAAA-MM-DD") ----------
 const p2 = (n: number) => String(n).padStart(2, '0')
 export const toDateStr = (d: Date) => `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`
-export const today = () => toDateStr(new Date())
+export const today = (d = new Date()) => toDateStr(d)
 export const parseDate = (s: string) => {
   const [y, m, d] = s.split('-').map(Number)
   return new Date(y, m - 1, d)

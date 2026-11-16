@@ -48,7 +48,7 @@ export default function Heatmap({ days, selected, onSelect }: { days: Map<string
           {months.map((m, i) => <text key={i} className="svg-lbl" x={m.x} y={10}>{m.label}</text>)}
           {['seg', '', 'qua', '', 'sex', '', ''].map((l, i) => l && <text key={i} className="svg-lbl" x={0} y={TOP + i * STEP + 9}>{l}</text>)}
           {cells.map((c) => (
-            <rect key={c.date} className={`cell l${c.level} ${selected === c.date ? 'sel' : ''}`} x={c.x} y={c.y} width={CELL} height={CELL} rx={2}
+            <rect key={c.date} className={`cell l${c.level} ${selected === c.date ? 'sel' : ''} ${c.date === today ? 'today' : ''}`} x={c.x} y={c.y} width={CELL} height={CELL} rx={3}
               onClick={() => onSelect(c.date)}>
               <title>{c.label}</title>
             </rect>
