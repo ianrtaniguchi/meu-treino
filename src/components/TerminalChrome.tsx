@@ -2,7 +2,16 @@ import { useLiveQuery } from 'dexie-react-hooks'
 import { useEffect, useState } from 'react'
 import { DB_VERSION, db } from '../data/db'
 import { useSyncStatus } from '../hooks'
-import { authenticateBiometricCredential, computePinBackoffMs, verifyPin, type LockConfig } from '../lib/lock'
+import {
+  authenticateBiometricCredential,
+  computePinBackoffMs,
+  getLockConfig,
+  getLockedState,
+  recordUnlockTimestamp,
+  subscribeLockedState,
+  verifyPin,
+  type LockConfig,
+} from '../lib/lock'
 
 export const APP_VERSION = `1.0.${DB_VERSION}`
 
@@ -14,16 +23,20 @@ function fmtClock(d = new Date()): string {
 export function Statusline() {
   const syncStatus = useSyncStatus()
   const pending = useLiveQuery(() => db.outbox.count(), [], 0)
+  const lockConfig = useLiveQuery(() => getLockConfig(), [])
+  const [locked, setLocked] = useState(() => getLockedState())
   const [online, setOnline] = useState(() => (typeof navigator !== 'undefined' ? navigator.onLine !== false : true))
   const [clock, setClock] = useState(() => fmtClock())
 
   useEffect(() => {
+    const unsubLock = subscribeLockedState(setLocked)
     const onOnline = () => setOnline(true)
     const onOffline = () => setOnline(false)
     window.addEventListener('online', onOnline)
     window.addEventListener('offline', onOffline)
     const timer = window.setInterval(() => setClock(fmtClock()), 15_000)
     return () => {
+      unsubLock()
       window.removeEventListener('online', onOnline)
       window.removeEventListener('offline', onOffline)
       window.clearInterval(timer)
@@ -41,6 +54,11 @@ export function Statusline() {
     syncIndicator = { dot: '●', label: 'synced', cls: 'green' }
   }
 
+  const isLockedNow = Boolean(lockConfig?.enabled && locked)
+  const lockIndicator = isLockedNow
+    ? { dot: '●', label: 'locked', cls: 'amber' }
+    : { dot: '○', label: 'unlocked', cls: lockConfig?.enabled ? 'green' : 'muted' }
+
   return (
     <div className="statusline" role="status" aria-label="Status do sistema">
       <div className="statusline-seg">
@@ -49,6 +67,9 @@ export function Statusline() {
         <span className="muted">v{APP_VERSION}</span>
       </div>
       <div className="statusline-seg">
+        <span className={`sync-pill ${lockIndicator.cls}`} aria-label="Estado da tranca">
+          <span className="status-dot" aria-hidden="true">{lockIndicator.dot}</span> {lockIndicator.label}
+        </span>
         <span className={`sync-pill ${syncIndicator.cls}`}>
           <span className="status-dot" aria-hidden="true">{syncIndicator.dot}</span> {syncIndicator.label}
         </span>
@@ -97,10 +118,12 @@ export function LockScreen({
 
   const waitSec = Math.max(0, Math.ceil((cooldownUntil - now) / 1000))
 
+  const fmtErr = (msg: string) => (msg.startsWith('error:') ? msg : `error: ${msg}`)
+
   const handleBiometric = async () => {
     if (!config.credentialId) {
       setShowPin(true)
-      setError('credencial biométrica ausente; use o PIN.')
+      setError('error: credencial biométrica ausente; use o PIN.')
       return
     }
     setBusy(true)
@@ -108,14 +131,16 @@ export function LockScreen({
     try {
       const ok = await authenticateBiometricCredential(config.credentialId)
       if (ok) {
+        await recordUnlockTimestamp()
         onUnlocked()
       } else {
         setShowPin(true)
-        setError('verificação falhou; tente novamente ou use o PIN.')
+        setError('error: verificação falhou; tente novamente ou use o PIN.')
       }
-    } catch {
+    } catch (e) {
       setShowPin(true)
-      setError('biometria cancelada ou indisponível; use o PIN.')
+      const msg = (e as Error)?.message || 'biometria cancelada ou indisponível; use o PIN.'
+      setError(fmtErr(msg))
     } finally {
       setBusy(false)
     }
@@ -124,7 +149,7 @@ export function LockScreen({
   const handlePin = async () => {
     if (waitSec > 0) return
     if (!config.pinSalt || !config.pinHash) {
-      setError('PIN de reserva não configurado.')
+      setError('error: PIN de reserva não configurado.')
       return
     }
     setBusy(true)
@@ -134,6 +159,7 @@ export function LockScreen({
       if (ok) {
         setPin('')
         setFailedAttempts(0)
+        await recordUnlockTimestamp()
         onUnlocked()
       } else {
         const nextFails = failedAttempts + 1
@@ -144,13 +170,13 @@ export function LockScreen({
           const until = Date.now() + delayMs
           setCooldownUntil(until)
           setNow(Date.now())
-          setError(`PIN incorreto (${nextFails}x). aguarde ${Math.ceil(delayMs / 1000)}s.`)
+          setError(`error: PIN incorreto (${nextFails}x). aguarde ${Math.ceil(delayMs / 1000)}s.`)
         } else {
-          setError('PIN incorreto.')
+          setError('error: PIN incorreto.')
         }
       }
     } catch {
-      setError('PIN deve ter de 4 a 6 dígitos.')
+      setError('error: PIN deve ter de 4 a 6 dígitos.')
     } finally {
       setBusy(false)
     }
@@ -159,9 +185,9 @@ export function LockScreen({
   return (
     <div className="lock-screen" role="dialog" aria-label="Tela de bloqueio">
       <div className="lock-panel stack">
-        <div className="muted small"># session locked</div>
+        <div className="muted small"># session locked · ● locked</div>
         <div className="lock-cmd">$ auth --biometric</div>
-        {error && <div className="lock-err">error: {error}</div>}
+        {error && <div className="lock-err">{error}</div>}
         <button className="primary block" disabled={busy} onClick={() => void handleBiometric()}>
           {busy ? 'verificando…' : '$ desbloquear'}
         </button>

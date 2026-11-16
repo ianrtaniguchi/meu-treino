@@ -13,6 +13,7 @@ import { useSetting, useSyncStatus } from '../hooks'
 import {
   DEFAULT_LOCK_TIMEOUT_MINUTES,
   disableLock,
+  formatTimeoutLabel,
   getLockConfig,
   isPlatformWebAuthnSupported,
   isValidPin,
@@ -123,16 +124,20 @@ export default function Config() {
     }
     setLockBusy(true)
     try {
-      // Chamada direta a partir do toque do usuário (exigência do iOS)
+      // Chamada direta a partir do toque do usuário (exigência do iOS).
+      // Padrão ao ativar: DEFAULT_LOCK_TIMEOUT_MINUTES = 0 ("sempre ao abrir").
       const credId = await registerBiometricCredential()
-      await saveLockSetup(credId, pin1, lockConfig?.timeoutMinutes ?? DEFAULT_LOCK_TIMEOUT_MINUTES)
+      const initialTimeout = lockConfig?.timeoutMinutes ?? DEFAULT_LOCK_TIMEOUT_MINUTES
+      await saveLockSetup(credId, pin1, initialTimeout)
       setSetupOpen(false)
       setPin1('')
       setPin2('')
+      setLockErr('')
       toast('Bloqueio com Face ID ativado')
     } catch (e) {
       const msg = (e as Error)?.message || 'falha ao registrar Face ID.'
-      setLockErr(msg.startsWith('error:') ? msg : `error: ${msg}`)
+      const formatted = msg.startsWith('error:') ? msg : `error: ${msg}`
+      setLockErr(formatted)
     } finally {
       setLockBusy(false)
     }
@@ -286,26 +291,68 @@ export default function Config() {
           </button>
         </div>
 
-        <div className="row between">
-          <div className="grow">
-            bloquear após segundo plano
-            <div className="muted small">tempo fora do app até pedir desbloqueio (min)</div>
-          </div>
-          <button
-            aria-label="menos minutos"
-            onClick={() => void setLockTimeoutMinutes(Math.max(0, (lockConfig?.timeoutMinutes ?? DEFAULT_LOCK_TIMEOUT_MINUTES) - 1))}
-          >
-            -
-          </button>
-          <b style={{ width: 28, textAlign: 'center' }}>
-            {lockConfig?.timeoutMinutes ?? DEFAULT_LOCK_TIMEOUT_MINUTES}
+        <div className="row between small">
+          <span className="muted">estado da tranca</span>
+          <b className={lockConfig?.enabled ? 'green' : 'muted'}>
+            {lockConfig?.enabled ? 'ativada' : 'desativada'}
           </b>
-          <button
-            aria-label="mais minutos"
-            onClick={() => void setLockTimeoutMinutes(Math.min(60, (lockConfig?.timeoutMinutes ?? DEFAULT_LOCK_TIMEOUT_MINUTES) + 1))}
-          >
-            +
-          </button>
+        </div>
+        <div className="row between small">
+          <span className="muted">credencial WebAuthn</span>
+          <b className={lockConfig?.credentialId ? 'green' : 'amber'}>
+            {lockConfig?.credentialId
+              ? `cadastrada (${lockConfig.credentialId.slice(0, 8)}…)`
+              : 'não cadastrada'}
+          </b>
+        </div>
+        <div className="row between small">
+          <span className="muted">tempo configurado</span>
+          <b>{formatTimeoutLabel(lockConfig?.timeoutMinutes ?? DEFAULT_LOCK_TIMEOUT_MINUTES)}</b>
+        </div>
+
+        {lockErr && <div className="lock-err">{lockErr}</div>}
+
+        <div className="stack">
+          <div className="row between">
+            <div className="grow">
+              bloquear após segundo plano
+              <div className="muted small">0 = sempre ao abrir · ou após N minutos</div>
+            </div>
+            <button
+              aria-label="menos minutos"
+              onClick={() => void setLockTimeoutMinutes(Math.max(0, (lockConfig?.timeoutMinutes ?? DEFAULT_LOCK_TIMEOUT_MINUTES) - 1))}
+            >
+              -
+            </button>
+            <b style={{ width: 28, textAlign: 'center' }}>
+              {lockConfig?.timeoutMinutes ?? DEFAULT_LOCK_TIMEOUT_MINUTES}
+            </b>
+            <button
+              aria-label="mais minutos"
+              onClick={() => void setLockTimeoutMinutes(Math.min(60, (lockConfig?.timeoutMinutes ?? DEFAULT_LOCK_TIMEOUT_MINUTES) + 1))}
+            >
+              +
+            </button>
+          </div>
+          <div className="row wrap">
+            {[
+              [0, 'sempre ao abrir (0s)'],
+              [1, '1 min'],
+              [5, '5 min'],
+              [15, '15 min'],
+            ].map(([mins, label]) => {
+              const cur = lockConfig?.timeoutMinutes ?? DEFAULT_LOCK_TIMEOUT_MINUTES
+              return (
+                <button
+                  key={mins}
+                  className={`small ${cur === mins ? 'on' : ''}`}
+                  onClick={() => void setLockTimeoutMinutes(Number(mins))}
+                >
+                  {label}
+                </button>
+              )
+            })}
+          </div>
         </div>
         <p className="muted small" style={{ margin: 0 }}>
           A credencial biométrica e o hash do PIN ficam apenas neste aparelho (não vão para o Firestore nem para o backup).

@@ -3,15 +3,21 @@ import { buildBackup, importBackup } from '../src/data/backup'
 import { db, setSetting, SYNCABLE_SETTINGS } from '../src/data/db'
 import {
   computePinBackoffMs,
+  DEFAULT_LOCK_TIMEOUT_MINUTES,
   disableLock,
+  formatTimeoutLabel,
   generateSalt,
   getLockConfig,
+  getPersistedHiddenAt,
   hashPin,
   isValidPin,
   LOCK_SETTING_KEYS,
+  recordHiddenTimestamp,
+  recordUnlockTimestamp,
   saveLockSetup,
-   setLockTimeoutMinutes,
+  setLockTimeoutMinutes,
   shouldLockAfterBackground,
+  shouldLockOnColdStart,
   verifyPin,
 } from '../src/lib/lock'
 
@@ -47,14 +53,44 @@ describe('Tranca com Face ID e PIN reserva (lógica local)', () => {
     expect(await verifyPin('00', salt1, hash1)).toBe(false)
   })
 
-  it('calcula timeout de retorno ao primeiro plano corretamente', () => {
+  it('calcula abertura a frio bloqueada, retorno antes/depois do limite, tempo 0 (sempre ao abrir) e persiste timestamps', async () => {
+    // Padrão ao ativar é 0 ("sempre ao abrir")
+    expect(DEFAULT_LOCK_TIMEOUT_MINUTES).toBe(0)
+    expect(formatTimeoutLabel(0)).toBe('sempre ao abrir (0s)')
+    expect(formatTimeoutLabel(5)).toBe('5 min')
+
+    // Abertura a frio: começa sempre bloqueada quando a tranca está ativa
+    expect(shouldLockOnColdStart(true)).toBe(true)
+    expect(shouldLockOnColdStart(false)).toBe(false)
+
     const t0 = 1_700_000_000_000
+    // Sem timestamp de segundo plano: não bloqueia por retorno
     expect(shouldLockAfterBackground(null, t0 + 120_000, 1)).toBe(false)
+
+    // Tempo 0 ("sempre ao abrir"): bloqueia imediatamente ao voltar de segundo plano (mesmo 0ms ou 50ms depois)
+    expect(shouldLockAfterBackground(t0, t0, 0)).toBe(true)
+    expect(shouldLockAfterBackground(t0, t0 + 50, 0)).toBe(true)
+
+    // Tempo > 0 (ex.: 1 min e 5 min): não bloqueia antes do limite, bloqueia ao atingir/passar do limite
     expect(shouldLockAfterBackground(t0, t0 + 59_999, 1)).toBe(false)
     expect(shouldLockAfterBackground(t0, t0 + 60_000, 1)).toBe(true)
     expect(shouldLockAfterBackground(t0, t0 + 4 * 60_000, 5)).toBe(false)
     expect(shouldLockAfterBackground(t0, t0 + 5 * 60_000, 5)).toBe(true)
-    expect(shouldLockAfterBackground(t0, t0, 0)).toBe(true)
+
+    // Persistência dos instantes de desbloqueio e de segundo plano no IndexedDB (sobrevive a descarte da memória pelo iOS)
+    await saveLockSetup('cred_persist', '1234') // usa padrão 0 min ("sempre ao abrir")
+    const cfgDefault = await getLockConfig()
+    expect(cfgDefault.timeoutMinutes).toBe(0)
+
+    await recordUnlockTimestamp(t0)
+    expect((await getLockConfig()).lastUnlockedAt).toBe(t0)
+    expect(await getPersistedHiddenAt()).toBeNull()
+
+    await recordHiddenTimestamp(t0 + 5_000)
+    const persistedHidden = await getPersistedHiddenAt()
+    expect(persistedHidden).toBe(t0 + 5_000)
+    expect(shouldLockAfterBackground(persistedHidden, t0 + 5_100, cfgDefault.timeoutMinutes)).toBe(true)
+    expect(await db.outbox.count()).toBe(0)
   })
 
   it('calcula atraso crescente (backoff) após tentativas erradas de PIN', () => {

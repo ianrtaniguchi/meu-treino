@@ -1,11 +1,19 @@
 import { useLiveQuery } from 'dexie-react-hooks'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { autoSnapshotIfDue } from './data/backup'
 import { db, setSetting } from './data/db'
 import { ensureSeed } from './data/seed'
 import { initSyncManager } from './data/sync'
 import { useSetting, useSyncStatus } from './hooks'
-import { DEFAULT_LOCK_TIMEOUT_MINUTES, getLockConfig, shouldLockAfterBackground } from './lib/lock'
+import {
+  DEFAULT_LOCK_TIMEOUT_MINUTES,
+  getLockConfig,
+  getPersistedHiddenAt,
+  recordHiddenTimestamp,
+  setLockedState,
+  shouldLockAfterBackground,
+  shouldLockOnColdStart,
+} from './lib/lock'
 import Treino from './tabs/Treino'
 import Dieta from './tabs/Dieta'
 import Corpo from './tabs/Corpo'
@@ -20,14 +28,23 @@ const TABS: Tab[] = ['treino', 'dieta', 'corpo', 'assistente', 'config']
 const WEEK = 7 * 24 * 3600 * 1000
 const BOOT_MAX_MS = 520
 
+function syncViewportHeightVar() {
+  if (typeof window === 'undefined' || typeof document === 'undefined') return
+  const h = window.visualViewport?.height ? Math.max(window.innerHeight, Math.round(window.visualViewport.height)) : window.innerHeight
+  if (h > 0) {
+    document.documentElement.style.setProperty('--vh', `${h}px`)
+  }
+}
+
 export default function App() {
   const [ready, setReady] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [tab, setTab] = useState<Tab>('treino')
   const [bootVisible, setBootVisible] = useState(true)
   const [bootLines, setBootLines] = useState<string[]>(['> loading db...'])
-  const [locked, setLocked] = useState(false)
-  const hiddenAtRef = useRef<number | null>(null)
+  // Na abertura a frio, a tranca começa ATIVA por padrão até confirmar getLockConfig()
+  const [locked, setLocked] = useState<boolean>(true)
+  const [hasUnlockedThisSession, setHasUnlockedThisSession] = useState<boolean>(false)
 
   const onboarded = useSetting<boolean>('onboardingDone', false)
   const lastBackup = useSetting<number | null>('lastBackupAt', null)
@@ -39,21 +56,44 @@ export default function App() {
     pinHash: null,
     pinSalt: null,
     timeoutMinutes: DEFAULT_LOCK_TIMEOUT_MINUTES,
+    lastUnlockedAt: null,
+    hiddenAt: null,
   })
+
+  // Recalcula --vh na abertura e ao voltar ao primeiro plano / redimensionar (iOS standalone)
+  useEffect(() => {
+    syncViewportHeightVar()
+    const onViewportChange = () => {
+      syncViewportHeightVar()
+    }
+    window.addEventListener('resize', onViewportChange)
+    window.addEventListener('orientationchange', onViewportChange)
+    window.addEventListener('pageshow', onViewportChange)
+    window.visualViewport?.addEventListener('resize', onViewportChange)
+    return () => {
+      window.removeEventListener('resize', onViewportChange)
+      window.removeEventListener('orientationchange', onViewportChange)
+      window.removeEventListener('pageshow', onViewportChange)
+      window.visualViewport?.removeEventListener('resize', onViewportChange)
+    }
+  }, [])
 
   useEffect(() => {
     const timer = window.setTimeout(() => setBootVisible(false), BOOT_MAX_MS)
     ;(async () => {
       try {
         await db.open()
-        await ensureSeed()
         const cfg = await getLockConfig()
-        if (cfg.enabled) {
-          setLocked(true)
-          setBootVisible(false) // Nunca bloqueia a tela de bloqueio
+        const coldLocked = shouldLockOnColdStart(cfg.enabled)
+        setLocked(coldLocked)
+        setLockedState(coldLocked)
+        if (coldLocked) {
+          setBootVisible(false) // Renderiza a tela de bloqueio imediatamente
+        } else {
+          setHasUnlockedThisSession(true)
         }
+        await ensureSeed()
         setBootLines(['> loading db... ok', '> storage.persist...'])
-        // pede ao navegador para não apagar os dados por falta de espaço
         const persisted = navigator.storage?.persist ? await navigator.storage.persist() : false
         await autoSnapshotIfDue()
         initSyncManager()
@@ -72,21 +112,50 @@ export default function App() {
     return () => window.clearTimeout(timer)
   }, [])
 
-  // Bloqueia ao voltar ao primeiro plano após N minutos em segundo plano
+  // Persiste instante de segundo plano e bloqueia ao retornar (visibilitychange, pagehide, pageshow)
   useEffect(() => {
-    const onVisibility = () => {
-      if (document.visibilityState === 'hidden') {
-        hiddenAtRef.current = Date.now()
-      } else if (document.visibilityState === 'visible') {
-        if (lockConfig.enabled && shouldLockAfterBackground(hiddenAtRef.current, Date.now(), lockConfig.timeoutMinutes)) {
-          setLocked(true)
-        }
-        hiddenAtRef.current = null
+    const onHidden = () => {
+      void recordHiddenTimestamp(Date.now())
+    }
+
+    const onVisible = async () => {
+      syncViewportHeightVar()
+      const cfg = await getLockConfig()
+      if (!cfg.enabled) return
+      const hiddenAt = (await getPersistedHiddenAt()) ?? cfg.hiddenAt
+      if (shouldLockAfterBackground(hiddenAt, Date.now(), cfg.timeoutMinutes)) {
+        setLocked(true)
+        setLockedState(true)
       }
     }
-    document.addEventListener('visibilitychange', onVisibility)
-    return () => document.removeEventListener('visibilitychange', onVisibility)
-  }, [lockConfig.enabled, lockConfig.timeoutMinutes])
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        onHidden()
+      } else if (document.visibilityState === 'visible') {
+        void onVisible()
+      }
+    }
+
+    const onPageShow = () => {
+      void onVisible()
+    }
+
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    window.addEventListener('pagehide', onHidden)
+    window.addEventListener('pageshow', onPageShow)
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+      window.removeEventListener('pagehide', onHidden)
+      window.removeEventListener('pageshow', onPageShow)
+    }
+  }, [])
+
+  const handleUnlocked = () => {
+    setLocked(false)
+    setLockedState(false)
+    setHasUnlockedThisSession(true)
+  }
 
   if (error)
     return (
@@ -96,8 +165,21 @@ export default function App() {
         <p className="muted">Se estiver em modo privado do Safari, abra o app instalado na Tela de Início.</p>
       </div>
     )
+
   if (!ready || onboarded === undefined) {
+    if (locked && lockConfig.enabled) {
+      return <LockScreen config={lockConfig} onUnlocked={handleUnlocked} />
+    }
     return bootVisible ? <BootOverlay lines={bootLines} onSkip={() => setBootVisible(false)} /> : null
+  }
+
+  // Na abertura a frio com tranca ativa, renderiza APENAS a tela de bloqueio antes de qualquer conteúdo
+  if (locked && lockConfig.enabled && !hasUnlockedThisSession) {
+    return (
+      <div className="app">
+        <LockScreen config={lockConfig} onUnlocked={handleUnlocked} />
+      </div>
+    )
   }
 
   if (!onboarded)
@@ -115,14 +197,19 @@ export default function App() {
   const ref = lastBackup ?? firstUse ?? Date.now()
   const stale = Date.now() - ref > WEEK
   const days = Math.floor((Date.now() - ref) / 86400000)
+  const isCurrentlyLocked = Boolean(locked && lockConfig.enabled)
 
   return (
     <div className="app">
-      {bootVisible && !locked && <BootOverlay lines={bootLines} onSkip={() => setBootVisible(false)} />}
-      {locked && lockConfig.enabled && (
-        <LockScreen config={lockConfig} onUnlocked={() => setLocked(false)} />
+      {bootVisible && !isCurrentlyLocked && <BootOverlay lines={bootLines} onSkip={() => setBootVisible(false)} />}
+      {isCurrentlyLocked && (
+        <LockScreen config={lockConfig} onUnlocked={handleUnlocked} />
       )}
-      <div className="scroll">
+      <div
+        className="scroll"
+        style={isCurrentlyLocked ? { visibility: 'hidden', pointerEvents: 'none' } : undefined}
+        aria-hidden={isCurrentlyLocked}
+      >
         {stale && (
           <div className="banner" onClick={() => setTab('config')}>
             {lastBackup ? `warn: último backup há ${days} dias.` : 'warn: nenhum backup feito ainda.'} toque para fazer agora.
@@ -134,7 +221,11 @@ export default function App() {
         {tab === 'assistente' && <Assistente />}
         {tab === 'config' && <Config />}
       </div>
-      <nav className="tabbar">
+      <nav
+        className="tabbar"
+        style={isCurrentlyLocked ? { visibility: 'hidden', pointerEvents: 'none' } : undefined}
+        aria-hidden={isCurrentlyLocked}
+      >
         {TABS.map((k) => (
           <button key={k} className={tab === k ? 'on' : ''} onClick={() => setTab(k)} aria-label={k}>
             <Icon name={k} />
@@ -142,7 +233,7 @@ export default function App() {
           </button>
         ))}
       </nav>
-      {syncStatus.firstLoginPreview && (
+      {syncStatus.firstLoginPreview && !isCurrentlyLocked && (
         <FirstLoginPrompt preview={syncStatus.firstLoginPreview} syncing={syncStatus.syncing} />
       )}
     </div>

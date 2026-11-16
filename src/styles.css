@@ -16,19 +16,33 @@
   --mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-html, body, #root { height: 100%; height: 100dvh; margin: 0; overflow: hidden; overscroll-behavior: none; }
+html, body {
+  height: 100%; margin: 0; overflow: hidden; overscroll-behavior: none;
+  background: linear-gradient(to bottom, var(--bg) 0%, var(--bg) 65%, var(--surface) 65%, var(--surface) 100%);
+  background-color: var(--surface);
+}
+#root {
+  position: fixed; inset: 0; width: 100%; height: var(--vh, 100%);
+  margin: 0; overflow: hidden; overscroll-behavior: none;
+  background: linear-gradient(to bottom, var(--bg) 0%, var(--bg) 65%, var(--surface) 65%, var(--surface) 100%);
+  background-color: var(--surface);
+}
 body {
-  background: var(--bg); color: var(--text);
+  color: var(--text);
   font: 400 14px/1.5 var(--mono); font-variant-numeric: tabular-nums; -webkit-text-size-adjust: 100%;
 }
 button, input, select, textarea { font-family: var(--mono); font-variant-numeric: tabular-nums; }
-.app { height: 100%; display: flex; flex-direction: column; overflow: hidden; }
-.scroll { flex: 1; overflow-y: auto; overscroll-behavior-y: contain; -webkit-overflow-scrolling: touch; padding: calc(var(--sat) + 12px) 14px calc(56px + var(--sab) + 28px); }
+.app { height: 100%; display: flex; flex-direction: column; overflow: hidden; background: var(--bg); }
+.scroll { flex: 1; overflow-y: auto; overscroll-behavior-y: contain; -webkit-overflow-scrolling: touch; background: var(--bg); padding: calc(var(--sat) + 12px) 14px calc(56px + var(--sab) + 28px); }
 .tabbar {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 40; display: flex;
   background: var(--surface); border-top: 1px solid var(--border);
   border-radius: var(--radius-lg) var(--radius-lg) 0 0;
-  padding: 2px 6px calc(var(--sab) + 2px);
+  padding: 2px 6px calc(env(safe-area-inset-bottom, 0px) + 2px);
+}
+.tabbar::after {
+  content: ''; position: absolute; left: 0; right: 0; top: 100%; height: 220px;
+  background: var(--surface); pointer-events: none;
 }
 .tabbar button {
   flex: 1; min-height: 54px; background: none; border: 0; color: var(--muted); font-size: 11px;
@@ -215,7 +229,7 @@ label.f > input, label.f > select { margin-top: 4px; }
   border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 18px;
 }
 .lock-cmd { font-size: 16px; font-weight: 700; color: var(--text); }
-.lock-err { font-size: 12px; color: var(--red); }
+.lock-err, .lock-error { font-size: 12px; color: var(--red); }
 
 /* sequência de boot (máx 600ms, pulável com um toque) */
 .boot-overlay {
