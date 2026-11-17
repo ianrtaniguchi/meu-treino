@@ -28,11 +28,19 @@ export interface Env {
   RATE_LIMITER?: RateLimiterBinding
   /** Binding opcional de Workers KV para rate limiting distribuído */
   RATE_LIMIT_KV?: KVNamespaceLike
+  /** Secrets do Google Calendar OAuth 2.0 (opcionais; se faltarem, só a agenda retorna erro claro) */
+  GOOGLE_CLIENT_ID?: string
+  GOOGLE_CLIENT_SECRET?: string
+  GOOGLE_REFRESH_TOKEN?: string
 }
 
 export const GOOGLE_JWKS_URL =
   'https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com'
 export const GROQ_CHAT_URL = 'https://api.groq.com/openai/v1/chat/completions'
+export const GOOGLE_OAUTH_TOKEN_URL = 'https://oauth2.googleapis.com/token'
+export const GOOGLE_CALENDAR_EVENTS_URL =
+  'https://www.googleapis.com/calendar/v3/calendars/primary/events'
+export const CALENDAR_TIMEZONE = 'America/Sao_Paulo'
 
 export const MAX_BODY_BYTES = 64 * 1024 // 64 KB
 export const MAX_MESSAGES = 40
@@ -53,6 +61,7 @@ const ALLOWED_TOP_FIELDS = new Set([
   'temperature',
   'max_tokens',
   'stream',
+  'calendar_action',
 ])
 
 const ALLOWED_ROLES = new Set(['system', 'user', 'assistant', 'tool'])
@@ -71,11 +80,13 @@ export interface JsonWebKeyWithKid extends JsonWebKey {
 let jwksCache: CachedJwks | null = null
 const firestoreKeyCache = new Map<string, { key: string; expiresAt: number }>()
 const memoryRateBuckets = new Map<string, { count: number; windowStartMs: number }>()
+let googleAccessTokenCache: { accessToken: string; expiresAt: number } | null = null
 
 export function resetWorkerCachesForTest() {
   jwksCache = null
   firestoreKeyCache.clear()
   memoryRateBuckets.clear()
+  googleAccessTokenCache = null
 }
 
 // ---------- Validação e busca da chave do Groq no Firestore (REST) ----------
@@ -377,12 +388,16 @@ function jsonResponse(
 // ---------- Validação e montagem do corpo da requisição ----------
 
 interface ValidatedClientFields {
-  messages: unknown[]
+  messages?: unknown[]
   tools?: unknown[]
   tool_choice?: unknown
   temperature?: number
   max_tokens: number
   stream?: boolean
+  calendar_action?: {
+    tool: string
+    args: Record<string, unknown>
+  }
 }
 
 function validateClientPayload(raw: unknown): ValidatedClientFields {
@@ -396,6 +411,25 @@ function validateClientPayload(raw: unknown): ValidatedClientFields {
   for (const key of Object.keys(obj)) {
     if (!ALLOWED_TOP_FIELDS.has(key)) {
       throw new Error(`Campo não permitido: ${key}`)
+    }
+  }
+
+  // Permite execução direta de ferramenta de agenda (calendar_action) sem exigir messages
+  if (obj.calendar_action !== undefined) {
+    if (!obj.calendar_action || typeof obj.calendar_action !== 'object' || Array.isArray(obj.calendar_action)) {
+      throw new Error('Campo "calendar_action" inválido.')
+    }
+    const ca = obj.calendar_action as Record<string, unknown>
+    if (typeof ca.tool !== 'string' || !ca.tool.trim()) {
+      throw new Error('Campo "calendar_action.tool" inválido.')
+    }
+    const args =
+      ca.args && typeof ca.args === 'object' && !Array.isArray(ca.args)
+        ? (ca.args as Record<string, unknown>)
+        : {}
+    return {
+      max_tokens: DEFAULT_MAX_TOKENS,
+      calendar_action: { tool: ca.tool.trim(), args },
     }
   }
 
@@ -530,6 +564,413 @@ function sanitizeGroqResponse(data: Record<string, unknown>, apiKey: string): Re
   return cloned
 }
 
+// ---------- Google Calendar API (OAuth Refresh Token + 4 ferramentas no Worker) ----------
+
+export interface CalendarEventSummary {
+  id: string
+  titulo: string
+  inicio: string
+  fim: string
+  local: string
+  descricao: string
+  htmlLink: string
+}
+
+export class CalendarConfigError extends Error {}
+
+function hasGoogleCalendarSecrets(env: Env): boolean {
+  return Boolean(
+    env.GOOGLE_CLIENT_ID?.trim() &&
+      env.GOOGLE_CLIENT_SECRET?.trim() &&
+      env.GOOGLE_REFRESH_TOKEN?.trim(),
+  )
+}
+
+export async function getGoogleAccessToken(
+  env: Env,
+  fetcher: typeof fetch = fetch,
+  nowMs = Date.now(),
+  forceRefresh = false,
+): Promise<string> {
+  if (!hasGoogleCalendarSecrets(env)) {
+    throw new CalendarConfigError(
+      'Google Calendar não configurado no Worker (defina GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET e GOOGLE_REFRESH_TOKEN).',
+    )
+  }
+
+  if (!forceRefresh && googleAccessTokenCache && nowMs < googleAccessTokenCache.expiresAt) {
+    return googleAccessTokenCache.accessToken
+  }
+
+  const body = new URLSearchParams({
+    client_id: env.GOOGLE_CLIENT_ID!.trim(),
+    client_secret: env.GOOGLE_CLIENT_SECRET!.trim(),
+    refresh_token: env.GOOGLE_REFRESH_TOKEN!.trim(),
+    grant_type: 'refresh_token',
+  })
+
+  const res = await fetcher(GOOGLE_OAUTH_TOKEN_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: body.toString(),
+  })
+
+  if (!res.ok) {
+    throw new Error(`Falha ao renovar access token do Google Calendar (HTTP ${res.status}).`)
+  }
+
+  const data = (await res.json()) as { access_token?: string; expires_in?: number }
+  if (!data?.access_token) {
+    throw new Error('Resposta OAuth do Google sem access_token.')
+  }
+
+  const ttlSec = Math.max(30, (Number(data.expires_in) || 3600) - 60)
+  googleAccessTokenCache = {
+    accessToken: data.access_token,
+    expiresAt: nowMs + ttlSec * 1000,
+  }
+  return data.access_token
+}
+
+function normalizeSaoPauloIso(dt: string): string {
+  const s = dt.trim()
+  if (!s) throw new Error('Data/hora vazia.')
+  // Se vier apenas AAAA-MM-DD, assume 09:00 em America/Sao_Paulo
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+    return `${s}T09:00:00-03:00`
+  }
+  // Se vier AAAA-MM-DDTHH:MM sem segundos, completa :00
+  const withSec = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(s) ? `${s}:00` : s
+  // Se não tiver sufixo Z nem offset +-HH:MM, adiciona -03:00 (America/Sao_Paulo)
+  if (!/(Z|[+-]\d{2}:\d{2})$/i.test(withSec)) {
+    return `${withSec}-03:00`
+  }
+  return withSec
+}
+
+function addDefaultOneHourIso(inicioIso: string): string {
+  const d = new Date(inicioIso)
+  if (Number.isNaN(d.getTime())) {
+    throw new Error('Data/hora de início inválida.')
+  }
+  const endMs = d.getTime() + 60 * 60 * 1000
+  // Mantém no fuso -03:00 (America/Sao_Paulo)
+  const spDate = new Date(endMs - 3 * 60 * 60 * 1000)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${spDate.getUTCFullYear()}-${pad(spDate.getUTCMonth() + 1)}-${pad(spDate.getUTCDate())}T${pad(spDate.getUTCHours())}:${pad(spDate.getUTCMinutes())}:${pad(spDate.getUTCSeconds())}-03:00`
+}
+
+function mapGoogleCalendarEvent(raw: any): CalendarEventSummary {
+  return {
+    id: String(raw?.id ?? ''),
+    titulo: String(raw?.summary ?? '(sem título)'),
+    inicio: String(raw?.start?.dateTime ?? raw?.start?.date ?? ''),
+    fim: String(raw?.end?.dateTime ?? raw?.end?.date ?? ''),
+    local: String(raw?.location ?? ''),
+    descricao: String(raw?.description ?? ''),
+    htmlLink: String(raw?.htmlLink ?? ''),
+  }
+}
+
+async function callGoogleCalendarApi(
+  env: Env,
+  pathAndQuery: string,
+  init: RequestInit,
+  fetcher: typeof fetch = fetch,
+  nowMs = Date.now(),
+): Promise<Response> {
+  let token = await getGoogleAccessToken(env, fetcher, nowMs, false)
+  const url = `${GOOGLE_CALENDAR_EVENTS_URL}${pathAndQuery}`
+  const doFetch = (accessToken: string) =>
+    fetcher(url, {
+      ...init,
+      headers: {
+        ...(init.headers ?? {}),
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+    })
+
+  let res = await doFetch(token)
+  if (res.status === 401) {
+    token = await getGoogleAccessToken(env, fetcher, nowMs, true)
+    res = await doFetch(token)
+  }
+  return res
+}
+
+export async function criar_evento(
+  params: {
+    titulo: string
+    inicio: string
+    fim?: string
+    local?: string
+    descricao?: string
+  },
+  env: Env,
+  deps: { fetcher?: typeof fetch; nowMs?: number } = {},
+): Promise<Record<string, unknown>> {
+  const titulo = String(params.titulo ?? '').trim()
+  const inicioRaw = String(params.inicio ?? '').trim()
+  if (!titulo || !inicioRaw) {
+    throw new Error('Título e horário de início são obrigatórios para criar_evento.')
+  }
+  const inicio = normalizeSaoPauloIso(inicioRaw)
+  const fim = params.fim && String(params.fim).trim() ? normalizeSaoPauloIso(String(params.fim)) : addDefaultOneHourIso(inicio)
+
+  const body: Record<string, unknown> = {
+    summary: titulo,
+    start: { dateTime: inicio, timeZone: CALENDAR_TIMEZONE },
+    end: { dateTime: fim, timeZone: CALENDAR_TIMEZONE },
+  }
+  if (params.local !== undefined) body.location = String(params.local).trim()
+  if (params.descricao !== undefined) body.description = String(params.descricao).trim()
+
+  const res = await callGoogleCalendarApi(
+    env,
+    '',
+    { method: 'POST', body: JSON.stringify(body) },
+    deps.fetcher,
+    deps.nowMs,
+  )
+  if (!res.ok) {
+    throw new Error(`Erro ao criar evento no Google Calendar (HTTP ${res.status}).`)
+  }
+  const created = await res.json()
+  return {
+    status: 'created',
+    event: mapGoogleCalendarEvent(created),
+  }
+}
+
+export async function listar_eventos(
+  params: { inicio: string; fim: string },
+  env: Env,
+  deps: { fetcher?: typeof fetch; nowMs?: number } = {},
+): Promise<Record<string, unknown>> {
+  const timeMin = normalizeSaoPauloIso(String(params.inicio ?? ''))
+  const timeMax = normalizeSaoPauloIso(String(params.fim ?? ''))
+  const qs = new URLSearchParams({
+    timeMin,
+    timeMax,
+    singleEvents: 'true',
+    orderBy: 'startTime',
+    timeZone: CALENDAR_TIMEZONE,
+    maxResults: '25',
+  })
+
+  const res = await callGoogleCalendarApi(
+    env,
+    `?${qs.toString()}`,
+    { method: 'GET' },
+    deps.fetcher,
+    deps.nowMs,
+  )
+  if (!res.ok) {
+    throw new Error(`Erro ao listar eventos no Google Calendar (HTTP ${res.status}).`)
+  }
+  const data = (await res.json()) as { items?: any[] }
+  const events = Array.isArray(data?.items) ? data.items.map(mapGoogleCalendarEvent) : []
+  return {
+    status: 'listed',
+    events,
+  }
+}
+
+export async function editar_evento(
+  params: {
+    id: string
+    campos?: {
+      titulo?: string
+      inicio?: string
+      fim?: string
+      local?: string
+      descricao?: string
+    }
+    titulo?: string
+    inicio?: string
+    fim?: string
+    local?: string
+    descricao?: string
+    confirmado?: boolean | string
+  },
+  env: Env,
+  deps: { fetcher?: typeof fetch; nowMs?: number } = {},
+): Promise<Record<string, unknown>> {
+  const eventId = String(params.id ?? '').trim()
+  if (!eventId) {
+    throw new Error('O parâmetro "id" do evento é obrigatório para editar_evento.')
+  }
+
+  const rawCampos =
+    params.campos && typeof params.campos === 'object' ? params.campos : {}
+  const campos: Record<string, string> = {}
+  for (const k of ['titulo', 'inicio', 'fim', 'local', 'descricao'] as const) {
+    const val = rawCampos[k] ?? params[k]
+    if (typeof val === 'string' && val.trim() !== '') {
+      campos[k] = val.trim()
+    }
+  }
+
+  // Busca o evento atual no Google Calendar
+  const getRes = await callGoogleCalendarApi(
+    env,
+    `/${encodeURIComponent(eventId)}`,
+    { method: 'GET' },
+    deps.fetcher,
+    deps.nowMs,
+  )
+  if (!getRes.ok) {
+    throw new Error(`Evento não encontrado no Google Calendar (HTTP ${getRes.status}).`)
+  }
+  const currentRaw = await getRes.json()
+  const currentEvent = mapGoogleCalendarEvent(currentRaw)
+
+  const isConfirmed =
+    params.confirmado === true ||
+    params.confirmado === 'confirmado' ||
+    (rawCampos as any).confirmado === true ||
+    (rawCampos as any).confirmado === 'confirmado'
+
+  // Exigência no código do Worker: a 1ª chamada devolve o evento e pede confirmação sem alterar nada
+  if (!isConfirmed) {
+    const previewEvent: CalendarEventSummary = {
+      ...currentEvent,
+      titulo: campos.titulo ?? currentEvent.titulo,
+      inicio: campos.inicio ? normalizeSaoPauloIso(campos.inicio) : currentEvent.inicio,
+      fim: campos.fim ? normalizeSaoPauloIso(campos.fim) : currentEvent.fim,
+      local: campos.local !== undefined ? campos.local : currentEvent.local,
+      descricao: campos.descricao !== undefined ? campos.descricao : currentEvent.descricao,
+    }
+    return {
+      status: 'confirmation_required',
+      requiresConfirmation: true,
+      action: 'editar_evento',
+      message:
+        'Confirmação necessária para editar este evento. Toque no botão Confirmar no card do evento para aplicar.',
+      event: previewEvent,
+      currentEvent,
+      pendingAction: {
+        tool: 'editar_evento',
+        id: eventId,
+        campos,
+      },
+    }
+  }
+
+  const patchBody: Record<string, unknown> = {}
+  if (campos.titulo !== undefined) patchBody.summary = campos.titulo
+  if (campos.local !== undefined) patchBody.location = campos.local
+  if (campos.descricao !== undefined) patchBody.description = campos.descricao
+  if (campos.inicio !== undefined) {
+    const newStart = normalizeSaoPauloIso(campos.inicio)
+    patchBody.start = { dateTime: newStart, timeZone: CALENDAR_TIMEZONE }
+    if (campos.fim === undefined) {
+      patchBody.end = { dateTime: addDefaultOneHourIso(newStart), timeZone: CALENDAR_TIMEZONE }
+    }
+  }
+  if (campos.fim !== undefined) {
+    patchBody.end = { dateTime: normalizeSaoPauloIso(campos.fim), timeZone: CALENDAR_TIMEZONE }
+  }
+
+  const patchRes = await callGoogleCalendarApi(
+    env,
+    `/${encodeURIComponent(eventId)}`,
+    { method: 'PATCH', body: JSON.stringify(patchBody) },
+    deps.fetcher,
+    deps.nowMs,
+  )
+  if (!patchRes.ok) {
+    throw new Error(`Erro ao atualizar evento no Google Calendar (HTTP ${patchRes.status}).`)
+  }
+  const updatedRaw = await patchRes.json()
+  return {
+    status: 'updated',
+    event: mapGoogleCalendarEvent(updatedRaw),
+  }
+}
+
+export async function apagar_evento(
+  params: { id: string; confirmado?: boolean | string },
+  env: Env,
+  deps: { fetcher?: typeof fetch; nowMs?: number } = {},
+): Promise<Record<string, unknown>> {
+  const eventId = String(params.id ?? '').trim()
+  if (!eventId) {
+    throw new Error('O parâmetro "id" do evento é obrigatório para apagar_evento.')
+  }
+
+  const isConfirmed = params.confirmado === true || params.confirmado === 'confirmado'
+
+  // Exigência no código do Worker: a 1ª chamada busca o evento, devolve-o e pede confirmação sem apagar
+  if (!isConfirmed) {
+    const getRes = await callGoogleCalendarApi(
+      env,
+      `/${encodeURIComponent(eventId)}`,
+      { method: 'GET' },
+      deps.fetcher,
+      deps.nowMs,
+    )
+    if (!getRes.ok) {
+      throw new Error(`Evento não encontrado no Google Calendar (HTTP ${getRes.status}).`)
+    }
+    const currentRaw = await getRes.json()
+    const currentEvent = mapGoogleCalendarEvent(currentRaw)
+    return {
+      status: 'confirmation_required',
+      requiresConfirmation: true,
+      action: 'apagar_evento',
+      message:
+        'Confirmação necessária para apagar este evento. Toque no botão Confirmar no card do evento para excluir.',
+      event: currentEvent,
+      pendingAction: {
+        tool: 'apagar_evento',
+        id: eventId,
+      },
+    }
+  }
+
+  const delRes = await callGoogleCalendarApi(
+    env,
+    `/${encodeURIComponent(eventId)}`,
+    { method: 'DELETE' },
+    deps.fetcher,
+    deps.nowMs,
+  )
+  if (!delRes.ok && delRes.status !== 204) {
+    throw new Error(`Erro ao apagar evento no Google Calendar (HTTP ${delRes.status}).`)
+  }
+  return {
+    status: 'deleted',
+    id: eventId,
+  }
+}
+
+export async function executeCalendarTool(
+  toolName: string,
+  args: Record<string, unknown>,
+  env: Env,
+  deps: { fetcher?: typeof fetch; nowMs?: number } = {},
+): Promise<Record<string, unknown>> {
+  try {
+    if (toolName === 'criar_evento') {
+      return await criar_evento(args as any, env, deps)
+    }
+    if (toolName === 'listar_eventos') {
+      return await listar_eventos(args as any, env, deps)
+    }
+    if (toolName === 'editar_evento') {
+      return await editar_evento(args as any, env, deps)
+    }
+    if (toolName === 'apagar_evento') {
+      return await apagar_evento(args as any, env, deps)
+    }
+    return { error: `Ferramenta de agenda desconhecida: ${toolName}` }
+  } catch (e) {
+    return { error: (e as Error).message || 'Erro ao acessar o Google Calendar.' }
+  }
+}
+
 // ---------- Handler principal do Cloudflare Worker ----------
 
 export async function handleRequest(
@@ -627,6 +1068,18 @@ export async function handleRequest(
     validatedFields = validateClientPayload(parsedBody)
   } catch (e) {
     return jsonResponse(400, { error: `error: ${(e as Error).message}` }, origin)
+  }
+
+  // Se for uma ação de ferramenta da agenda (criar_evento, listar_eventos, editar_evento, apagar_evento),
+  // executa diretamente no Worker usando as credenciais OAuth do Google Calendar.
+  if (validatedFields.calendar_action) {
+    const calResult = await executeCalendarTool(
+      validatedFields.calendar_action.tool,
+      validatedFields.calendar_action.args,
+      env,
+      { fetcher, nowMs },
+    )
+    return jsonResponse(200, calResult, origin)
   }
 
   // Obtém a chave do Groq (secret opcional ou Firestore users/{uid}.groqApiKey com cache de 5 min)

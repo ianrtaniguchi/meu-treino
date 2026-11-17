@@ -21,7 +21,9 @@ Regras obrigatórias:
 1. Baseie suas análises EXCLUSIVAMENTE nos dados reais do usuário obtidos pelas ferramentas de leitura. Consulte as ferramentas antes de responder sobre evolução, volume, dieta ou peso.
 2. Quando não houver dados suficientes registrados no período, diga claramente que ainda não há registros suficientes — NUNCA invente números, séries, pesos ou calorias.
 3. NUNCA dê diagnóstico médico nem prescreva tratamento clínico. Se o usuário relatar dor aguda, lesão ou condição clínica, recomende consultar um médico, fisioterapeuta ou nutricionista.
-4. Você NÃO grava dados diretamente no banco. Quando o usuário pedir para registrar uma refeição, criar uma rotina de treino ou registrar peso/medidas, chame a ferramenta de proposta correspondente (propose_meal, propose_routine ou propose_body_weight) e avise que o rascunho foi gerado abaixo para ele conferir e confirmar.`
+4. Você NÃO grava dados diretamente no banco. Quando o usuário pedir para registrar uma refeição, criar uma rotina de treino ou registrar peso/medidas, chame a ferramenta de proposta correspondente (propose_meal, propose_routine ou propose_body_weight) e avise que o rascunho foi gerado abaixo para ele conferir e confirmar.
+
+Agenda (Google Calendar): você também gerencia a agenda do usuário no fuso America/Sao_Paulo (usando a data e hora atuais informadas abaixo) com as ferramentas criar_evento, editar_evento, listar_eventos e apagar_evento. Use duração padrão de 1h quando o término não for informado, pergunte ao usuário se faltar data ou hora para criar um evento, e extraia automaticamente título, data, horário, local e descrição de e-mails e convites colados na conversa (lembrando que editar e apagar exigem confirmação pelo botão Confirmar).`
 
 const WEEKDAYS_PT = [
   'domingo',
@@ -98,6 +100,28 @@ export interface BodyDraft {
 
 export type AssistantDraft = MealDraft | RoutineDraft | BodyDraft
 
+export interface CalendarEventInfo {
+  id: string
+  titulo: string
+  inicio: string
+  fim?: string
+  local?: string
+  descricao?: string
+  htmlLink?: string
+}
+
+export interface CalendarCardItem {
+  id: string
+  action: 'criar_evento' | 'listar_eventos' | 'editar_evento' | 'apagar_evento'
+  status: 'created' | 'listed' | 'pending_confirmation' | 'confirmed'
+  event: CalendarEventInfo
+  pendingAction?: {
+    tool: 'editar_evento' | 'apagar_evento'
+    id: string
+    campos?: Record<string, unknown>
+  }
+}
+
 export interface ChatTurnMessage {
   id: string
   role: 'user' | 'assistant'
@@ -107,6 +131,8 @@ export interface ChatTurnMessage {
   dataSent?: string[]
   /** Rascunhos propostos pelo assistente aguardando confirmação do usuário */
   drafts?: AssistantDraft[]
+  /** Cards de eventos da agenda (Google Calendar) exibidos na conversa */
+  calendarCards?: CalendarCardItem[]
 }
 
 // ---------- Definições das ferramentas (OpenAI / Groq function calling schema) ----------
@@ -307,6 +333,93 @@ export const ASSISTANT_TOOLS: ToolDefinition[] = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'criar_evento',
+      description:
+        'Cria um evento no Google Calendar (calendário primary, fuso America/Sao_Paulo). Se fim for omitido, usa duração padrão de 1h.',
+      parameters: {
+        type: 'object',
+        properties: {
+          titulo: { type: 'string', description: 'Título do evento' },
+          inicio: {
+            type: 'string',
+            description: 'Data e hora de início em ISO 8601 no fuso America/Sao_Paulo (ex.: "2026-11-17T14:00:00-03:00")',
+          },
+          fim: {
+            type: 'string',
+            description: 'Data e hora de término em ISO 8601 (opcional; padrão +1h após o início)',
+          },
+          local: { type: 'string', description: 'Local ou endereço do evento (opcional)' },
+          descricao: { type: 'string', description: 'Descrição ou observações do evento (opcional)' },
+        },
+        required: ['titulo', 'inicio'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'editar_evento',
+      description:
+        'Solicita edição de um evento existente no Google Calendar pelo id. A primeira chamada devolve o evento e pede confirmação do usuário.',
+      parameters: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', description: 'ID do evento no Google Calendar' },
+          campos: {
+            type: 'object',
+            description: 'Campos a atualizar no evento (titulo, inicio, fim, local, descricao)',
+            properties: {
+              titulo: { type: 'string' },
+              inicio: { type: 'string' },
+              fim: { type: 'string' },
+              local: { type: 'string' },
+              descricao: { type: 'string' },
+            },
+          },
+        },
+        required: ['id'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'listar_eventos',
+      description: 'Lista eventos do Google Calendar (primary) no intervalo entre inicio e fim.',
+      parameters: {
+        type: 'object',
+        properties: {
+          inicio: {
+            type: 'string',
+            description: 'Início do intervalo em ISO 8601 (ex.: "2026-11-17T00:00:00-03:00")',
+          },
+          fim: {
+            type: 'string',
+            description: 'Fim do intervalo em ISO 8601 (ex.: "2026-11-17T23:59:59-03:00")',
+          },
+        },
+        required: ['inicio', 'fim'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'apagar_evento',
+      description:
+        'Solicita exclusão de um evento no Google Calendar pelo id. A primeira chamada devolve o evento e pede confirmação do usuário.',
+      parameters: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', description: 'ID do evento no Google Calendar' },
+        },
+        required: ['id'],
+      },
+    },
+  },
 ]
 
 // ---------- Validação e gravação mediante confirmação explícita do rascunho ----------
@@ -447,7 +560,21 @@ export interface ToolExecutionOutput {
   result: Record<string, unknown>
   dataLabel: string
   draft?: AssistantDraft
+  calendarCards?: CalendarCardItem[]
 }
+
+export interface ExecuteToolRuntimeOptions {
+  fetcher?: typeof fetch
+  getToken?: () => Promise<string | null>
+  workerUrl?: string
+}
+
+const CALENDAR_TOOL_NAMES = new Set([
+  'criar_evento',
+  'editar_evento',
+  'listar_eventos',
+  'apagar_evento',
+])
 
 function normalizeStr(s: string): string {
   return s
@@ -505,9 +632,73 @@ export async function executeAssistantTool(
   name: string,
   rawArgs: Record<string, unknown>,
   now: Date = new Date(),
+  runtime: ExecuteToolRuntimeOptions = {},
 ): Promise<ToolExecutionOutput> {
   // Data local de hoje calculada exatamente pela mesma função `today(now)` usada pelo Painel e Heatmap
   const localToday = today(now)
+
+  if (CALENDAR_TOOL_NAMES.has(name)) {
+    const fetcher = runtime.fetcher ?? fetch
+    const getToken = runtime.getToken ?? defaultGetIdToken
+    const baseUrl = (runtime.workerUrl ?? ASSISTANT_WORKER_URL).replace(/\/+$/, '')
+    const token = await getToken()
+    if (!token) {
+      throw new Error('Sessão não autenticada para acessar a agenda.')
+    }
+    const res = await fetcher(`${baseUrl}/chat`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        calendar_action: {
+          tool: name,
+          args: rawArgs,
+        },
+      }),
+    })
+    const data = (await res.json()) as Record<string, any>
+    if (!res.ok || data.error) {
+      return {
+        dataLabel: `agenda (${name})`,
+        result: { error: data.error || `Falha na agenda (HTTP ${res.status})` },
+      }
+    }
+
+    const cards: CalendarCardItem[] = []
+    if (name === 'criar_evento' && data.event) {
+      cards.push({
+        id: uid(),
+        action: 'criar_evento',
+        status: 'created',
+        event: data.event as CalendarEventInfo,
+      })
+    } else if (name === 'listar_eventos' && Array.isArray(data.events)) {
+      for (const ev of data.events) {
+        cards.push({
+          id: uid(),
+          action: 'listar_eventos',
+          status: 'listed',
+          event: ev as CalendarEventInfo,
+        })
+      }
+    } else if ((name === 'editar_evento' || name === 'apagar_evento') && data.event) {
+      cards.push({
+        id: uid(),
+        action: name,
+        status: data.requiresConfirmation ? 'pending_confirmation' : 'confirmed',
+        event: data.event as CalendarEventInfo,
+        pendingAction: data.pendingAction,
+      })
+    }
+
+    return {
+      dataLabel: `agenda (${name})`,
+      result: data,
+      calendarCards: cards.length > 0 ? cards : undefined,
+    }
+  }
 
   if (name === 'get_weekly_summary') {
     const refDate = clampToLocalToday(rawArgs.referenceDate, localToday)
@@ -1075,6 +1266,7 @@ export async function sendAssistantTurn(
 
   const dataSentLabels: string[] = ['mensagem da conversa']
   const collectedDrafts: AssistantDraft[] = []
+  const collectedCalendarCards: CalendarCardItem[] = []
 
   const MAX_TOOL_ROUNDS = 4
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
@@ -1124,6 +1316,7 @@ export async function sendAssistantTurn(
         createdAt: Date.now(),
         dataSent: [...new Set(dataSentLabels)],
         drafts: collectedDrafts.length > 0 ? collectedDrafts : undefined,
+        calendarCards: collectedCalendarCards.length > 0 ? collectedCalendarCards : undefined,
       }
     }
 
@@ -1143,10 +1336,17 @@ export async function sendAssistantTurn(
       }
 
       try {
-        const out = await executeAssistantTool(tc.function.name, parsedArgs, now)
+        const out = await executeAssistantTool(tc.function.name, parsedArgs, now, {
+          fetcher,
+          getToken,
+          workerUrl: baseUrl,
+        })
         dataSentLabels.push(out.dataLabel)
         if (out.draft) {
           collectedDrafts.push(out.draft)
+        }
+        if (out.calendarCards) {
+          collectedCalendarCards.push(...out.calendarCards)
         }
         apiMessages.push({
           role: 'tool',
@@ -1173,5 +1373,50 @@ export async function sendAssistantTurn(
     createdAt: Date.now(),
     dataSent: [...new Set(dataSentLabels)],
     drafts: collectedDrafts.length > 0 ? collectedDrafts : undefined,
+    calendarCards: collectedCalendarCards.length > 0 ? collectedCalendarCards : undefined,
   }
+}
+
+/**
+ * Confirma no Worker uma edição ou exclusão de evento do Google Calendar
+ * após o usuário tocar no botão Confirmar no card do evento.
+ */
+export async function confirmCalendarCard(
+  card: CalendarCardItem,
+  options: SendAssistantOptions = {},
+): Promise<CalendarEventInfo | null> {
+  if (!card.pendingAction) {
+    throw new Error('Nenhuma ação pendente neste evento.')
+  }
+  const fetcher = options.fetcher ?? fetch
+  const getToken = options.getToken ?? defaultGetIdToken
+  const baseUrl = (options.workerUrl ?? ASSISTANT_WORKER_URL).replace(/\/+$/, '')
+  const token = await getToken()
+  if (!token) {
+    throw new Error('error: entre na sua conta em ~/config para confirmar na agenda.')
+  }
+
+  const res = await fetcher(`${baseUrl}/chat`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      calendar_action: {
+        tool: card.pendingAction.tool,
+        args: {
+          id: card.pendingAction.id,
+          ...(card.pendingAction.campos ? { campos: card.pendingAction.campos } : {}),
+          confirmado: 'confirmado',
+        },
+      },
+    }),
+  })
+
+  const data = (await res.json()) as Record<string, any>
+  if (!res.ok || data.error) {
+    throw new Error(data.error || `Falha ao confirmar evento (HTTP ${res.status}).`)
+  }
+  return (data.event as CalendarEventInfo) ?? null
 }

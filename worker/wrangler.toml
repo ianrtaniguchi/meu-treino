@@ -22,3 +22,7 @@ ALLOWED_ORIGINS = "https://ianrtaniguchi.github.io,http://localhost:5173"
 # A chave do Groq é lida pelo Worker diretamente do Firestore em users/{uid}.groqApiKey.
 # Opcionalmente, você pode definir um secret como fallback via:
 #   npx wrangler secret put GROQ_API_KEY
+# Para habilitar a agenda (Google Calendar), defina os secrets no Worker:
+#   npx wrangler secret put GOOGLE_CLIENT_ID
+#   npx wrangler secret put GOOGLE_CLIENT_SECRET
+#   npx wrangler secret put GOOGLE_REFRESH_TOKEN

@@ -10,15 +10,18 @@ import {
   ASSISTANT_TOOLS,
   buildSystemPrompt,
   clearAssistantHistory,
+  confirmCalendarCard,
   executeAssistantTool,
   extractFinalAssistantContent,
   loadAssistantHistory,
   saveAssistantHistory,
   sendAssistantTurn,
+  SYSTEM_PROMPT,
   validateDraft,
   type AssistantDraft,
   type ChatTurnMessage,
 } from '../src/lib/assistant'
+import { CALENDAR_SCOPE } from '../scripts/google-oauth.mjs'
 
 async function resetDb() {
   await db.delete()
@@ -54,6 +57,10 @@ describe('Assistente de IA no App (ferramentas, rascunhos, privacidade e isolame
       'propose_meal',
       'propose_routine',
       'propose_body_weight',
+      'criar_evento',
+      'editar_evento',
+      'listar_eventos',
+      'apagar_evento',
     ])
 
     const ex = (await db.exercises.toArray())[0]
@@ -393,5 +400,71 @@ describe('Assistente de IA no App (ferramentas, rascunhos, privacidade e isolame
     expect(exHist.result.todayDate).toBe('2026-11-15')
     expect(exHist.result.period).toEqual({ from: '2026-11-09', to: '2026-11-15' })
     expect(exHist.result.totalSessions).toBe(1)
+  })
+
+  it('integra ferramentas de agenda (Google Calendar), escopo calendar.events e fluxo de confirmação de editar/apagar', async () => {
+    expect(CALENDAR_SCOPE).toBe('https://www.googleapis.com/auth/calendar.events')
+    expect(SYSTEM_PROMPT).toContain('America/Sao_Paulo')
+    expect(SYSTEM_PROMPT).toContain('1h')
+    expect(SYSTEM_PROMPT).toContain('Confirmar')
+
+    const sentPayloads: any[] = []
+    const mockCalendarWorkerFetch: typeof fetch = async (_input, init) => {
+      const body = JSON.parse(String(init?.body ?? '{}'))
+      sentPayloads.push(body)
+      const ca = body.calendar_action
+      if (ca?.tool === 'apagar_evento' && !ca.args?.confirmado) {
+        return new Response(
+          JSON.stringify({
+            status: 'confirmation_required',
+            requiresConfirmation: true,
+            action: 'apagar_evento',
+            event: {
+              id: 'evt-99',
+              titulo: 'Treino no Parque',
+              inicio: '2026-11-17T10:00:00-03:00',
+              fim: '2026-11-17T11:00:00-03:00',
+              local: 'Parque Ibirapuera',
+              htmlLink: 'https://calendar.google.com/calendar/event?eid=evt99',
+            },
+            pendingAction: { tool: 'apagar_evento', id: 'evt-99' },
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        )
+      }
+      if (ca?.tool === 'apagar_evento' && ca.args?.confirmado === 'confirmado') {
+        return new Response(
+          JSON.stringify({ status: 'deleted', id: 'evt-99' }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        )
+      }
+      throw new Error('Chamada inesperada')
+    }
+
+    const out = await executeAssistantTool(
+      'apagar_evento',
+      { id: 'evt-99' },
+      new Date('2026-11-17T09:00:00-03:00'),
+      {
+        fetcher: mockCalendarWorkerFetch,
+        getToken: async () => 'token-firebase-mock',
+        workerUrl: 'https://meu-worker.workers.dev',
+      },
+    )
+
+    expect(out.calendarCards).toHaveLength(1)
+    const card = out.calendarCards![0]
+    expect(card.status).toBe('pending_confirmation')
+    expect(card.event.titulo).toBe('Treino no Parque')
+    expect(card.event.htmlLink).toContain('calendar.google.com')
+
+    await confirmCalendarCard(card, {
+      fetcher: mockCalendarWorkerFetch,
+      getToken: async () => 'token-firebase-mock',
+      workerUrl: 'https://meu-worker.workers.dev',
+    })
+
+    expect(sentPayloads).toHaveLength(2)
+    expect(sentPayloads[1].calendar_action.args.confirmado).toBe('confirmado')
   })
 })

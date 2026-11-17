@@ -7,10 +7,12 @@ import { useSyncStatus } from '../hooks'
 import {
   applyConfirmedDraft,
   clearAssistantHistory,
+  confirmCalendarCard,
   loadAssistantHistory,
   saveAssistantHistory,
   sendAssistantTurn,
   type AssistantDraft,
+  type CalendarCardItem,
   type ChatTurnMessage,
 } from '../lib/assistant'
 
@@ -125,6 +127,32 @@ export default function Assistente() {
     toast('Rascunho descartado')
   }
 
+  const handleConfirmCalendarCard = async (msgId: string, card: CalendarCardItem) => {
+    try {
+      const updatedEvent = await confirmCalendarCard(card)
+      const updated = history.map((m) => {
+        if (m.id !== msgId || !m.calendarCards) return m
+        return {
+          ...m,
+          calendarCards: m.calendarCards.map((c) =>
+            c.id === card.id
+              ? {
+                  ...c,
+                  status: 'confirmed' as const,
+                  event: updatedEvent ?? c.event,
+                  pendingAction: undefined,
+                }
+              : c,
+          ),
+        }
+      })
+      await saveAssistantHistory(updated)
+      toast(card.action === 'apagar_evento' ? 'Evento apagado da agenda' : 'Evento atualizado na agenda')
+    } catch (e) {
+      toast((e as Error).message || 'Falha ao confirmar na agenda')
+    }
+  }
+
   return (
     <>
       <div className="row between" style={{ alignItems: 'baseline' }}>
@@ -208,6 +236,15 @@ export default function Assistente() {
                     draft={d}
                     onConfirm={() => void handleConfirmDraft(m.id, d)}
                     onDiscard={() => void handleDiscardDraft(m.id, d.id)}
+                  />
+                ))}
+
+              {m.calendarCards &&
+                m.calendarCards.map((c) => (
+                  <CalendarEventCard
+                    key={c.id}
+                    card={c}
+                    onConfirm={() => void handleConfirmCalendarCard(m.id, c)}
                   />
                 ))}
 
@@ -361,6 +398,82 @@ function DraftCard({
             descartar
           </button>
         </div>
+      )}
+    </div>
+  )
+}
+
+function fmtCalendarDateTime(iso: string): { date: string; time: string } {
+  if (!iso) return { date: '—', time: '—' }
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return { date: iso, time: '' }
+  return {
+    date: d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' }),
+    time: d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
+  }
+}
+
+function CalendarEventCard({
+  card,
+  onConfirm,
+}: {
+  card: CalendarCardItem
+  onConfirm: () => void
+}) {
+  const { event, status, action } = card
+  const startFmt = fmtCalendarDateTime(event.inicio)
+  const endFmt = event.fim ? fmtCalendarDateTime(event.fim) : null
+  const isPending = status === 'pending_confirmation'
+
+  return (
+    <div
+      className="card stack small"
+      style={{
+        background: 'var(--bg)',
+        borderColor: isPending ? 'var(--amber)' : 'var(--green)',
+      }}
+    >
+      <div className="row between">
+        <b className={isPending ? 'amber' : 'green'}>{event.titulo}</b>
+        <span className="chip">
+          {isPending
+            ? action === 'apagar_evento'
+              ? 'confirmar exclusão'
+              : 'confirmar edição'
+            : status === 'confirmed'
+              ? 'confirmado'
+              : 'agenda'}
+        </span>
+      </div>
+      <div>
+        data: <b>{startFmt.date}</b> · hora:{' '}
+        <b>
+          {startFmt.time}
+          {endFmt?.time ? ` – ${endFmt.time}` : ''}
+        </b>
+      </div>
+      {event.local && (
+        <div className="muted">
+          local: <b>{event.local}</b>
+        </div>
+      )}
+      {event.htmlLink && (
+        <div>
+          <a
+            href={event.htmlLink}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="green"
+            style={{ textDecoration: 'underline' }}
+          >
+            abrir no Google Calendar
+          </a>
+        </div>
+      )}
+      {isPending && (
+        <button className="primary small block" onClick={onConfirm}>
+          Confirmar
+        </button>
       )}
     </div>
   )

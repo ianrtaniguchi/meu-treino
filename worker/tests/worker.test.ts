@@ -1,11 +1,17 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  apagar_evento,
   buildFirestoreUserDocUrl,
+  criar_evento,
+  editar_evento,
   FIRESTORE_KEY_CACHE_TTL_MS,
+  GOOGLE_CALENDAR_EVENTS_URL,
   GOOGLE_JWKS_URL,
+  GOOGLE_OAUTH_TOKEN_URL,
   GROQ_CHAT_URL,
   handleRequest,
   isValidGroqApiKey,
+  listar_eventos,
   resetWorkerCachesForTest,
   type Env,
   type JsonWebKeyWithKid,
@@ -532,5 +538,224 @@ describe('Cloudflare Worker Proxy (/chat)', () => {
     logSpy.mockRestore()
     warnSpy.mockRestore()
     errSpy.mockRestore()
+  })
+
+  it('agenda (Google Calendar): se faltarem secrets do Google, só a agenda retorna erro claro e o resto do assistente segue funcionando', async () => {
+    const envWithoutGoogle = makeBaseEnv()
+    const fetcher = createMockFetcher()
+    const token = await signTestJwt({
+      iss: `https://securetoken.google.com/${PROJECT_ID}`,
+      aud: PROJECT_ID,
+      sub: MY_UID,
+      iat: nowSec - 10,
+      exp: nowSec + 3600,
+    })
+
+    // 1. Chamada normal de chat continua funcionando normalmente
+    const chatReq = new Request('https://worker.example.com/chat', {
+      method: 'POST',
+      headers: {
+        Origin: ALLOWED_ORIGIN,
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        messages: [{ role: 'user', content: 'Como está meu treino?' }],
+      }),
+    })
+    const chatRes = await handleRequest(chatReq, envWithoutGoogle, { fetcher, nowMs })
+    expect(chatRes.status).toBe(200)
+
+    // 2. Chamada de agenda sem secrets devolve erro claro apenas para a agenda
+    const calReq = new Request('https://worker.example.com/chat', {
+      method: 'POST',
+      headers: {
+        Origin: ALLOWED_ORIGIN,
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        calendar_action: {
+          tool: 'listar_eventos',
+          args: { inicio: '2026-11-17T00:00:00-03:00', fim: '2026-11-17T23:59:59-03:00' },
+        },
+      }),
+    })
+    const calRes = await handleRequest(calReq, envWithoutGoogle, { fetcher, nowMs })
+    expect(calRes.status).toBe(200)
+    const calData = (await calRes.json()) as { error?: string }
+    expect(calData.error).toContain('GOOGLE_CLIENT_ID')
+  })
+
+  it('agenda (Google Calendar): criar_evento (duração padrão 1h), listar_eventos, renovação de access token e confirmação obrigatória no código para editar_evento e apagar_evento', async () => {
+    const env: Env = {
+      ...makeBaseEnv(),
+      GOOGLE_CLIENT_ID: 'client-id-mock',
+      GOOGLE_CLIENT_SECRET: 'client-secret-mock',
+      GOOGLE_REFRESH_TOKEN: 'refresh-token-mock',
+    }
+
+    let oauthCalls = 0
+    let patchCalls = 0
+    let deleteCalls = 0
+    let lastCreatedPayload: any = null
+
+    const calFetcher: typeof fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+      const method = (init?.method ?? 'GET').toUpperCase()
+
+      if (url === GOOGLE_OAUTH_TOKEN_URL) {
+        oauthCalls++
+        return new Response(
+          JSON.stringify({
+            access_token: `ya29.mock_token_${oauthCalls}`,
+            expires_in: 120, // 2 min (expira em 60s considerando margem)
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        )
+      }
+
+      if (url === GOOGLE_CALENDAR_EVENTS_URL && method === 'POST') {
+        lastCreatedPayload = JSON.parse(String(init?.body ?? '{}'))
+        return new Response(
+          JSON.stringify({
+            id: 'evt-101',
+            summary: lastCreatedPayload.summary,
+            location: lastCreatedPayload.location,
+            description: lastCreatedPayload.description,
+            start: lastCreatedPayload.start,
+            end: lastCreatedPayload.end,
+            htmlLink: 'https://calendar.google.com/calendar/event?eid=evt101',
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        )
+      }
+
+      if (url.startsWith(`${GOOGLE_CALENDAR_EVENTS_URL}?`) && method === 'GET') {
+        return new Response(
+          JSON.stringify({
+            items: [
+              {
+                id: 'evt-101',
+                summary: 'Consulta Nutricionista',
+                location: 'Av. Paulista, 1000',
+                description: 'Levar exames',
+                start: { dateTime: '2026-11-17T14:00:00-03:00' },
+                end: { dateTime: '2026-11-17T15:00:00-03:00' },
+                htmlLink: 'https://calendar.google.com/calendar/event?eid=evt101',
+              },
+            ],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        )
+      }
+
+      if (url === `${GOOGLE_CALENDAR_EVENTS_URL}/evt-101` && method === 'GET') {
+        return new Response(
+          JSON.stringify({
+            id: 'evt-101',
+            summary: 'Consulta Nutricionista',
+            location: 'Av. Paulista, 1000',
+            description: 'Levar exames',
+            start: { dateTime: '2026-11-17T14:00:00-03:00' },
+            end: { dateTime: '2026-11-17T15:00:00-03:00' },
+            htmlLink: 'https://calendar.google.com/calendar/event?eid=evt101',
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        )
+      }
+
+      if (url === `${GOOGLE_CALENDAR_EVENTS_URL}/evt-101` && method === 'PATCH') {
+        patchCalls++
+        const patch = JSON.parse(String(init?.body ?? '{}'))
+        return new Response(
+          JSON.stringify({
+            id: 'evt-101',
+            summary: patch.summary ?? 'Consulta Nutricionista',
+            location: patch.location ?? 'Av. Paulista, 1000',
+            description: patch.description ?? 'Levar exames',
+            start: patch.start ?? { dateTime: '2026-11-17T14:00:00-03:00' },
+            end: patch.end ?? { dateTime: '2026-11-17T15:00:00-03:00' },
+            htmlLink: 'https://calendar.google.com/calendar/event?eid=evt101',
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        )
+      }
+
+      if (url === `${GOOGLE_CALENDAR_EVENTS_URL}/evt-101` && method === 'DELETE') {
+        deleteCalls++
+        return new Response(null, { status: 204 })
+      }
+
+      throw new Error(`URL inesperada no mock de agenda: ${method} ${url}`)
+    }
+
+    // 1. criar_evento sem `fim` aplica duração padrão de 1h em America/Sao_Paulo
+    const created = await criar_evento(
+      {
+        titulo: 'Consulta Nutricionista',
+        inicio: '2026-11-17T14:00:00-03:00',
+        local: 'Av. Paulista, 1000',
+        descricao: 'Levar exames',
+      },
+      env,
+      { fetcher: calFetcher, nowMs },
+    )
+    expect(created.status).toBe('created')
+    expect(lastCreatedPayload.start.dateTime).toBe('2026-11-17T14:00:00-03:00')
+    expect(lastCreatedPayload.end.dateTime).toBe('2026-11-17T15:00:00-03:00')
+    expect(oauthCalls).toBe(1)
+
+    // 2. listar_eventos reutiliza o access_token em cache antes de expirar
+    const listed = await listar_eventos(
+      { inicio: '2026-11-17T00:00:00-03:00', fim: '2026-11-17T23:59:59-03:00' },
+      env,
+      { fetcher: calFetcher, nowMs: nowMs + 10_000 },
+    )
+    expect(listed.status).toBe('listed')
+    expect((listed.events as any[])[0].titulo).toBe('Consulta Nutricionista')
+    expect(oauthCalls).toBe(1)
+
+    // 3. editar_evento: 1ª chamada (sem confirmado) NÃO faz PATCH, devolve o evento e pede confirmação
+    const editPreview = await editar_evento(
+      { id: 'evt-101', campos: { titulo: 'Nutricionista Esportivo' } },
+      env,
+      { fetcher: calFetcher, nowMs: nowMs + 20_000 },
+    )
+    expect(editPreview.status).toBe('confirmation_required')
+    expect(editPreview.requiresConfirmation).toBe(true)
+    expect((editPreview.event as any).titulo).toBe('Nutricionista Esportivo')
+    expect(patchCalls).toBe(0)
+
+    // 4. editar_evento: 2ª chamada (com confirmado: "confirmado", e simulando expiração do access_token para testar renovação) executa PATCH
+    const editConfirmed = await editar_evento(
+      { id: 'evt-101', campos: { titulo: 'Nutricionista Esportivo' }, confirmado: 'confirmado' },
+      env,
+      { fetcher: calFetcher, nowMs: nowMs + 180_000 }, // após expirar o TTL do token
+    )
+    expect(editConfirmed.status).toBe('updated')
+    expect((editConfirmed.event as any).titulo).toBe('Nutricionista Esportivo')
+    expect(patchCalls).toBe(1)
+    expect(oauthCalls).toBe(2) // renovou o access token automaticamente!
+
+    // 5. apagar_evento: 1ª chamada (sem confirmado) NÃO faz DELETE, devolve o evento e pede confirmação
+    const delPreview = await apagar_evento(
+      { id: 'evt-101' },
+      env,
+      { fetcher: calFetcher, nowMs: nowMs + 185_000 },
+    )
+    expect(delPreview.status).toBe('confirmation_required')
+    expect(delPreview.requiresConfirmation).toBe(true)
+    expect((delPreview.event as any).id).toBe('evt-101')
+    expect(deleteCalls).toBe(0)
+
+    // 6. apagar_evento: 2ª chamada (com confirmado: "confirmado") executa DELETE
+    const delConfirmed = await apagar_evento(
+      { id: 'evt-101', confirmado: 'confirmado' },
+      env,
+      { fetcher: calFetcher, nowMs: nowMs + 186_000 },
+    )
+    expect(delConfirmed.status).toBe('deleted')
+    expect(deleteCalls).toBe(1)
   })
 })
