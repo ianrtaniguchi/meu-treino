@@ -1,5 +1,5 @@
 import { useLiveQuery } from 'dexie-react-hooks'
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { PromptTitle } from '../components/TerminalChrome'
 import { Field, Progress, Seg, Sheet, useUi } from '../components/ui'
 import { db, setSetting, uid } from '../data/db'
@@ -7,18 +7,9 @@ import { DEFAULT_GOALS } from '../data/seed'
 import { addDays, dayTotals, fmtLong, fmtNum, fmtShort, num, sumItems, today } from '../data/stats'
 import type { Food, Goals, Meal, MealItem, MealType } from '../data/types'
 import { useSetting } from '../hooks'
+import { addItems, analyzeMealPhoto, MealAnalysisError, mealTypeForHour, NoFoodError, undoAddItems } from '../lib/mealPhoto'
 
 const TYPES: [MealType, string][] = [['cafe', 'café da manhã'], ['almoco', 'almoço'], ['jantar', 'jantar'], ['lanche', 'lanches']]
-const mealId = (date: string, type: MealType) => `meal-${date}-${type}`
-
-async function addItems(date: string, type: MealType, items: MealItem[]) {
-  await db.transaction('rw', db.meals, async () => {
-    const id = mealId(date, type)
-    const m = (await db.meals.get(id)) ?? { id, date, type, items: [], createdAt: Date.now() }
-    m.items = [...m.items, ...items]
-    await db.meals.put(m)
-  })
-}
 
 export default function Dieta() {
   const { confirm, toast } = useUi()
@@ -29,6 +20,30 @@ export default function Dieta() {
   const [adding, setAdding] = useState<MealType | null>(null)
   const [showGoals, setShowGoals] = useState(false)
   const [showFoods, setShowFoods] = useState(false)
+  const [photoBusy, setPhotoBusy] = useState(false)
+  const [editing, setEditing] = useState<{ m: Meal; idx: number } | null>(null)
+  const fileRef = useRef<HTMLInputElement>(null)
+
+  // Foto do prato: analisa, valida e salva direto na refeição do horário atual (com "desfazer")
+  const onPhoto = async (file?: File) => {
+    if (!file || photoBusy) return
+    setPhotoBusy(true)
+    try {
+      const items = await analyzeMealPhoto(file)
+      const type = mealTypeForHour(new Date())
+      const day = today()
+      await addItems(day, type, items)
+      setDate(day)
+      const kcal = Math.round(items.reduce((a, i) => a + i.kcal, 0))
+      toast(`Registrado: ${fmtNum(kcal)} kcal`, { label: 'desfazer', run: () => void undoAddItems(day, type, items.length) })
+    } catch (e) {
+      if (e instanceof NoFoodError) toast('Não encontrei comida na foto. Nada foi salvo.')
+      else toast(`error: ${e instanceof MealAnalysisError ? e.message : 'falha ao analisar a foto.'} Nada foi salvo.`)
+    } finally {
+      setPhotoBusy(false)
+      if (fileRef.current) fileRef.current.value = ''
+    }
+  }
 
   const dayMeals = meals.filter((m) => m.date === date)
   const tot = dayTotals(dayMeals)
@@ -68,6 +83,18 @@ export default function Dieta() {
         <button onClick={() => setDate(addDays(date, 1))}>›</button>
       </div>
 
+      <button className="primary block" style={{ marginTop: 10 }} disabled={photoBusy} onClick={() => fileRef.current?.click()}>
+        {photoBusy ? 'analisando prato…' : 'Foto do prato'}
+      </button>
+      <input
+        ref={fileRef}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        hidden
+        onChange={(e) => void onPhoto(e.target.files?.[0])}
+      />
+
       <div className="card" style={{ marginTop: 10 }}>
         <div className="row between" style={{ alignItems: 'baseline' }}>
           <span className="muted small">kcal</span>
@@ -99,7 +126,7 @@ export default function Dieta() {
             </div>
             {m?.items.map((it, i) => (
               <div key={i} className="item">
-                <div className="grow">
+                <div className="grow tap" style={{ cursor: 'pointer' }} onClick={() => setEditing({ m, idx: i })}>
                   <div>{it.name} <span className="muted small">· {it.qty}</span></div>
                   <div className="muted small">{fmtNum(it.kcal)} kcal · P {fmtNum(it.p)} · C {fmtNum(it.c)} · G {fmtNum(it.g)}</div>
                 </div>
@@ -134,7 +161,34 @@ export default function Dieta() {
       {adding && <AddFood type={adding} date={date} onClose={() => setAdding(null)} />}
       {showGoals && <GoalsSheet goals={goals} onClose={() => setShowGoals(false)} />}
       {showFoods && <FoodsManager onClose={() => setShowFoods(false)} />}
+      {editing && <EditItemSheet meal={editing.m} idx={editing.idx} onClose={() => setEditing(null)} />}
     </>
+  )
+}
+
+function EditItemSheet({ meal, idx, onClose }: { meal: Meal; idx: number; onClose: () => void }) {
+  const it = meal.items[idx]
+  const [s, setS] = useState({ name: it.name, qty: it.qty, kcal: String(it.kcal), p: String(it.p), c: String(it.c), g: String(it.g) })
+  const save = async () => {
+    if (!s.name.trim()) return
+    const items = meal.items.map((x, i) => (i === idx ? { name: s.name.trim(), qty: s.qty.trim() || '1 porção', kcal: num(s.kcal), p: num(s.p), c: num(s.c), g: num(s.g) } : x))
+    await db.meals.put({ ...meal, items })
+    onClose()
+  }
+  return (
+    <Sheet title="Editar alimento" onClose={onClose}>
+      <div className="stack">
+        <Field label="Nome" value={s.name} mode="text" onChange={(v) => setS({ ...s, name: v })} />
+        <Field label="Quantidade (ex.: 150 g)" value={s.qty} mode="text" onChange={(v) => setS({ ...s, qty: v })} />
+        <div className="grid2">
+          <Field label="kcal" value={s.kcal} onChange={(v) => setS({ ...s, kcal: v })} />
+          <Field label="Proteína (g)" value={s.p} onChange={(v) => setS({ ...s, p: v })} />
+          <Field label="Carboidrato (g)" value={s.c} onChange={(v) => setS({ ...s, c: v })} />
+          <Field label="Gordura (g)" value={s.g} onChange={(v) => setS({ ...s, g: v })} />
+        </div>
+        <button className="primary block" onClick={save}>Salvar</button>
+      </div>
+    </Sheet>
   )
 }
 
