@@ -758,4 +758,64 @@ describe('Cloudflare Worker Proxy (/chat)', () => {
     expect(delConfirmed.status).toBe('deleted')
     expect(deleteCalls).toBe(1)
   })
+
+  it('/analyze-meal: força o modelo de visão, desliga o raciocínio, aceita foto > 64 KB e valida a entrada', async () => {
+    const env = makeBaseEnv()
+    let groqBody: any = null
+    const fetcher = createMockFetcher({
+      onGroqCall: (init) => {
+        groqBody = JSON.parse(String(init?.body ?? '{}'))
+        return new Response(
+          JSON.stringify({
+            choices: [{ message: { content: '```json\n{"itens":[{"nome":"Arroz","gramas":150,"kcal":195,"proteina_g":4,"carbo_g":42,"gordura_g":0.5,"confianca":"alta"}]}\n```' } }],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        )
+      },
+    })
+    const token = await signTestJwt({
+      iss: `https://securetoken.google.com/${PROJECT_ID}`,
+      aud: PROJECT_ID,
+      sub: MY_UID,
+      iat: nowSec - 10,
+      exp: nowSec + 3600,
+    })
+    const post = (body: unknown) =>
+      new Request('https://worker.example.com/analyze-meal', {
+        method: 'POST',
+        headers: { Origin: ALLOWED_ORIGIN, Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+
+    // foto de ~200 KB (acima do limite de 64 KB do chat) é aceita
+    const image = `data:image/jpeg;base64,${'A'.repeat(200_000)}`
+    const res = await handleRequest(post({ image }), env, { fetcher, nowMs })
+    expect(res.status).toBe(200)
+    const data = (await res.json()) as { itens: any[] }
+    expect(data.itens[0].nome).toBe('Arroz')
+    expect(groqBody.model).toBe('qwen/qwen3.6-27b')
+    expect(groqBody.reasoning_effort).toBe('none')
+    expect(groqBody.response_format).toEqual({ type: 'json_object' })
+    expect(groqBody.messages[0].content[1]).toEqual({ type: 'image_url', image_url: { url: image } })
+
+    // entrada inválida e campos extras
+    expect((await handleRequest(post({ image: 'http://evil/x.jpg' }), env, { fetcher, nowMs })).status).toBe(400)
+    expect((await handleRequest(post({ image, model: 'outro' }), env, { fetcher, nowMs })).status).toBe(400)
+
+    // resposta não-JSON da IA vira 502 limpo
+    const badFetcher = createMockFetcher({
+      onGroqCall: () =>
+        new Response(JSON.stringify({ choices: [{ message: { content: 'não sei' } }] }), { status: 200 }),
+    })
+    const bad = await handleRequest(post({ image }), env, { fetcher: badFetcher, nowMs })
+    expect(bad.status).toBe(502)
+
+    // o chat continua limitado a 64 KB
+    const bigChat = new Request('https://worker.example.com/chat', {
+      method: 'POST',
+      headers: { Origin: ALLOWED_ORIGIN, Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messages: [{ role: 'user', content: 'x'.repeat(70 * 1024) }] }),
+    })
+    expect((await handleRequest(bigChat, env, { fetcher, nowMs })).status).toBe(413)
+  })
 })

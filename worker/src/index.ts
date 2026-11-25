@@ -16,6 +16,8 @@ export interface Env {
   GROQ_FALLBACK_MODEL?: string
   /** Esforço de raciocínio para modelos gpt-oss ("low" | "medium" | "high") */
   GROQ_REASONING_EFFORT?: string
+  /** Modelo com visão usado em /analyze-meal (padrão: "qwen/qwen3.6-27b") */
+  GROQ_VISION_MODEL?: string
   /** ID do projeto Firebase (padrão: "meu-treino-2007") */
   FIREBASE_PROJECT_ID?: string
   /** UID único autorizado a usar o assistente */
@@ -43,6 +45,14 @@ export const GOOGLE_CALENDAR_EVENTS_URL =
 export const CALENDAR_TIMEZONE = 'America/Sao_Paulo'
 
 export const MAX_BODY_BYTES = 64 * 1024 // 64 KB
+/** Limite do corpo da rota /analyze-meal (foto do prato já reduzida no cliente, em data URL base64) */
+export const MAX_IMAGE_BODY_BYTES = 1_500_000
+export const DEFAULT_VISION_MODEL = 'qwen/qwen3.6-27b'
+const MEAL_IMAGE_DATA_URL_RE = /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/]+={0,2}$/
+const MEAL_ANALYSIS_PROMPT = `Você é um nutricionista. Analise a foto do prato e estime os alimentos visíveis e a porção de cada um.
+Responda APENAS com JSON válido, sem texto antes ou depois, exatamente neste formato:
+{"itens":[{"nome":"","gramas":0,"kcal":0,"proteina_g":0,"carbo_g":0,"gordura_g":0,"confianca":"alta|media|baixa"}]}
+Regras: nomes em português do Brasil; valores numéricos (não strings) para a porção total visível de cada item; "confianca" deve ser "alta", "media" ou "baixa". Se a imagem não tiver comida, responda {"itens":[]}.`
 export const MAX_MESSAGES = 40
 export const MAX_MESSAGE_CHARS = 12_000
 export const MAX_TOKENS_CEILING = 1_024
@@ -971,6 +981,74 @@ export async function executeCalendarTool(
   }
 }
 
+// ---------- Foto do prato (/analyze-meal): visão + JSON ----------
+
+/** Extrai o objeto JSON do texto devolvido pelo modelo (tolera cercas ```json). */
+export function parseMealAnalysisContent(content: unknown): { itens: unknown[] } {
+  if (typeof content !== 'string') throw new Error('resposta vazia')
+  let text = content.trim()
+  const fence = text.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i)
+  if (fence) text = fence[1].trim()
+  const parsed = JSON.parse(text) as unknown
+  if (!parsed || typeof parsed !== 'object' || !Array.isArray((parsed as any).itens)) {
+    throw new Error('formato inesperado')
+  }
+  return { itens: (parsed as any).itens as unknown[] }
+}
+
+async function analyzeMealImage(
+  imageDataUrl: string,
+  groqApiKey: string,
+  env: Env,
+  fetcher: typeof fetch,
+): Promise<{ status: number; body: Record<string, unknown> }> {
+  const model = (env.GROQ_VISION_MODEL ?? DEFAULT_VISION_MODEL).trim() || DEFAULT_VISION_MODEL
+  let res: Response
+  try {
+    res = await fetcher(GROQ_CHAT_URL, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${groqApiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: MEAL_ANALYSIS_PROMPT },
+              { type: 'image_url', image_url: { url: imageDataUrl } },
+            ],
+          },
+        ],
+        response_format: { type: 'json_object' },
+        // Desativa o raciocínio/thinking para a resposta vir rápida e só com o JSON
+        reasoning_effort: 'none',
+        temperature: 0.2,
+        max_completion_tokens: 1200,
+      }),
+    })
+  } catch {
+    return { status: 502, body: { error: 'error: falha de comunicação com o provedor de IA.' } }
+  }
+
+  if (!res.ok) {
+    if (res.status === 429) {
+      return { status: 429, body: { error: 'error: limite de uso da API de IA atingido (429). Tente novamente em instantes.' } }
+    }
+    if (res.status === 401 || res.status === 403) {
+      return { status: 502, body: { error: 'error: falha de autenticação do provedor de IA.' } }
+    }
+    return { status: 502, body: { error: `error: serviço de IA temporariamente indisponível (${res.status}).` } }
+  }
+
+  try {
+    const data = (await res.json()) as any
+    const parsed = parseMealAnalysisContent(data?.choices?.[0]?.message?.content)
+    return { status: 200, body: parsed }
+  } catch {
+    return { status: 502, body: { error: 'error: a IA devolveu uma resposta inválida. Tente outra foto.' } }
+  }
+}
+
 // ---------- Handler principal do Cloudflare Worker ----------
 
 export async function handleRequest(
@@ -1000,7 +1078,8 @@ export async function handleRequest(
     return jsonResponse(403, { error: 'error: origem não permitida pelo CORS.' })
   }
 
-  if (url.pathname !== '/chat') {
+  const isAnalyzeMeal = url.pathname === '/analyze-meal'
+  if (url.pathname !== '/chat' && !isAnalyzeMeal) {
     return jsonResponse(404, { error: 'error: rota não encontrada.' }, origin)
   }
 
@@ -1044,15 +1123,17 @@ export async function handleRequest(
     )
   }
 
-  // Limite de 64 KB para o corpo da requisição
+  // Limite de 64 KB para o corpo do chat (a foto do prato tem um limite próprio, maior)
+  const maxBodyBytes = isAnalyzeMeal ? MAX_IMAGE_BODY_BYTES : MAX_BODY_BYTES
+  const tooLargeMsg = isAnalyzeMeal ? 'error: foto muito grande.' : 'error: corpo da requisição excede 64 KB.'
   const contentLength = request.headers.get('Content-Length')
-  if (contentLength && Number.parseInt(contentLength, 10) > MAX_BODY_BYTES) {
-    return jsonResponse(413, { error: 'error: corpo da requisição excede 64 KB.' }, origin)
+  if (contentLength && Number.parseInt(contentLength, 10) > maxBodyBytes) {
+    return jsonResponse(413, { error: tooLargeMsg }, origin)
   }
 
   const rawBuffer = await request.arrayBuffer()
-  if (rawBuffer.byteLength > MAX_BODY_BYTES) {
-    return jsonResponse(413, { error: 'error: corpo da requisição excede 64 KB.' }, origin)
+  if (rawBuffer.byteLength > maxBodyBytes) {
+    return jsonResponse(413, { error: tooLargeMsg }, origin)
   }
 
   let parsedBody: unknown
@@ -1061,6 +1142,23 @@ export async function handleRequest(
     parsedBody = JSON.parse(text)
   } catch {
     return jsonResponse(400, { error: 'error: JSON inválido no corpo da requisição.' }, origin)
+  }
+
+  if (isAnalyzeMeal) {
+    const b = parsedBody as Record<string, unknown> | null
+    const image = b && typeof b === 'object' && !Array.isArray(b) ? b.image : undefined
+    const extra = b && typeof b === 'object' ? Object.keys(b).filter((k) => k !== 'image') : []
+    if (typeof image !== 'string' || !MEAL_IMAGE_DATA_URL_RE.test(image) || extra.length > 0) {
+      return jsonResponse(400, { error: 'error: envie { "image": "data:image/jpeg;base64,..." }.' }, origin)
+    }
+    let visionKey: string
+    try {
+      visionKey = await resolveGroqApiKey(env, projectId, jwtPayload.sub, userIdToken, fetcher, nowMs)
+    } catch {
+      return jsonResponse(503, { error: 'chave do assistente não configurada' }, origin)
+    }
+    const out = await analyzeMealImage(image, visionKey, env, fetcher)
+    return jsonResponse(out.status, out.body, origin)
   }
 
   let validatedFields: ValidatedClientFields
