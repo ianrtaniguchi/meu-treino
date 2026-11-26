@@ -1,5 +1,5 @@
 import { useLiveQuery } from 'dexie-react-hooks'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { autoSnapshotIfDue } from './data/backup'
 import { db, setSetting } from './data/db'
 import { ensureSeed } from './data/seed'
@@ -35,6 +35,14 @@ import {
 
 type Tab = 'treino' | 'dieta' | 'corpo' | 'assistente' | 'noticias' | 'config'
 const TABS: Tab[] = ['treino', 'dieta', 'corpo', 'assistente', 'noticias', 'config']
+const TAB_LABELS: Record<Tab, string> = {
+  treino: 'Treino (~/treino)',
+  dieta: 'Dieta (~/dieta)',
+  corpo: 'Corpo (~/corpo)',
+  assistente: 'Assistente IA (~/assistente)',
+  noticias: 'Notícias do Ifes (~/noticias)',
+  config: 'Configurações (~/config)',
+}
 const WEEK = 7 * 24 * 3600 * 1000
 const BOOT_MAX_MS = 520
 
@@ -56,6 +64,9 @@ export default function App() {
   // Na abertura a frio, a tranca começa ATIVA por padrão até confirmar getLockConfig()
   const [locked, setLocked] = useState<boolean>(true)
   const [hasUnlockedThisSession, setHasUnlockedThisSession] = useState<boolean>(false)
+  const [tabPressing, setTabPressing] = useState<boolean>(false)
+  const navRef = useRef<HTMLElement | null>(null)
+  const pointerDownRef = useRef<boolean>(false)
 
   // Estado compartilhado de notícias do Ifes para badge de não lidas + aba ~/noticias
   const [noticiasItems, setNoticiasItems] = useState<IfesNoticia[]>([])
@@ -258,6 +269,21 @@ export default function App() {
   const stale = Date.now() - ref > WEEK
   const days = Math.floor((Date.now() - ref) / 86400000)
   const isCurrentlyLocked = Boolean(locked && lockConfig.enabled)
+  const activeTabIndex = Math.max(0, TABS.indexOf(tab))
+
+  const pickTabFromClientX = (clientX: number) => {
+    const navEl = navRef.current
+    if (!navEl) return
+    const rect = navEl.getBoundingClientRect()
+    const innerLeft = rect.left + 5
+    const innerWidth = Math.max(1, rect.width - 10)
+    const rel = Math.min(0.9999, Math.max(0, (clientX - innerLeft) / innerWidth))
+    const idx = Math.floor(rel * TABS.length)
+    const nextTab = TABS[idx]
+    if (nextTab && nextTab !== tab) {
+      setTab(nextTab)
+    }
+  }
 
   return (
     <div className="app">
@@ -290,23 +316,63 @@ export default function App() {
         {tab === 'config' && <Config />}
       </main>
       <nav
-        className="tabbar"
-        style={isCurrentlyLocked ? { visibility: 'hidden', pointerEvents: 'none' } : undefined}
+        ref={navRef}
+        className={`tabbar${tabPressing ? ' pressing' : ''}`}
+        style={
+          {
+            '--active-idx': activeTabIndex,
+            '--tab-count': TABS.length,
+            ...(isCurrentlyLocked ? { visibility: 'hidden', pointerEvents: 'none' } : {}),
+          } as CSSProperties
+        }
+        aria-label="Navegação principal"
         aria-hidden={isCurrentlyLocked}
+        onPointerDown={() => {
+          pointerDownRef.current = true
+          setTabPressing(true)
+        }}
+        onPointerMove={(e) => {
+          if (!pointerDownRef.current) return
+          pickTabFromClientX(e.clientX)
+        }}
+        onPointerUp={() => {
+          pointerDownRef.current = false
+          setTabPressing(false)
+        }}
+        onPointerCancel={() => {
+          pointerDownRef.current = false
+          setTabPressing(false)
+        }}
+        onPointerLeave={() => {
+          pointerDownRef.current = false
+          setTabPressing(false)
+        }}
       >
-        {TABS.map((k) => (
-          <button key={k} className={tab === k ? 'on' : ''} onClick={() => setTab(k)} aria-label={k}>
-            <span className="tabbar-icon-wrap">
-              <Icon name={k} />
-              {k === 'noticias' && unreadNoticiasCount > 0 && (
-                <span className="tab-badge" aria-label={`${unreadNoticiasCount} não lidas`}>
-                  {unreadNoticiasCount > 99 ? '99+' : unreadNoticiasCount}
-                </span>
-              )}
-            </span>
-            {k}
-          </button>
-        ))}
+        <span className="tabbar-lens" aria-hidden="true" />
+        {TABS.map((k) => {
+          const isActive = tab === k
+          const label = TAB_LABELS[k]
+          return (
+            <button
+              key={k}
+              type="button"
+              className={isActive ? 'on' : ''}
+              onClick={() => setTab(k)}
+              aria-label={label}
+              aria-current={isActive ? 'page' : undefined}
+              title={label}
+            >
+              <span className="tabbar-icon-wrap">
+                <Icon name={k} />
+                {k === 'noticias' && unreadNoticiasCount > 0 && (
+                  <span className="tab-badge" aria-label={`${unreadNoticiasCount} não lidas`}>
+                    {unreadNoticiasCount > 99 ? '99+' : unreadNoticiasCount}
+                  </span>
+                )}
+              </span>
+            </button>
+          )
+        })}
       </nav>
       {syncStatus.firstLoginPreview && !isCurrentlyLocked && (
         <FirstLoginPrompt preview={syncStatus.firstLoginPreview} syncing={syncStatus.syncing} />
