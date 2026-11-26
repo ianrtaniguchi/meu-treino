@@ -57,31 +57,26 @@ export default function RouteCalculatorView({ lines, onOpenLine }: RouteCalculat
     <div className="stack">
       <div className="card stack">
         <div className="row between">
-          <b>Planejador de Rota • Grande Vitória</b>
-          <span className="tag-pr">Em breve • Preview</span>
-        </div>
-        <div className="muted small">
-          Interface desacoplada pronta para o motor de roteirização multi-trecho (Transcol +
-          Aquaviário). Digite origem e destino para consultar linhas troncais compatíveis com o
-          trajeto.
+          <b>Planejador de Rota</b>
+          <span className="tag-pr">Em breve</span>
         </div>
 
         <form className="stack" onSubmit={handleCalculate}>
           <label className="field">
-            Ponto de Origem
+            Origem
             <input
               type="text"
-              placeholder="Ex.: T. Laranjeiras, Vila Velha, Camburi..."
+              placeholder="Ex.: T. Laranjeiras, Vila Velha..."
               value={origin}
               onChange={(e) => setOrigin(e.target.value)}
             />
           </label>
 
           <label className="field">
-            Ponto de Destino
+            Destino
             <input
               type="text"
-              placeholder="Ex.: Ifes Campus Vitória, UFES, T. Itaparica..."
+              placeholder="Ex.: Ifes Vitória, UFES, T. Itaparica..."
               value={destination}
               onChange={(e) => setDestination(e.target.value)}
             />

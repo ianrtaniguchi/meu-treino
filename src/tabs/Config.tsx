@@ -485,9 +485,6 @@ export default function Config() {
             </button>
             <button onClick={() => void doSignOut()}>sair</button>
           </div>
-          <p className="muted small" style={{ margin: 0 }}>
-            Sair não apaga os dados locais deste aparelho.
-          </p>
         </div>
       ) : (
         <div className="card stack">
@@ -508,9 +505,11 @@ export default function Config() {
                 ? 'entrar'
                 : 'enviar link de redefinição'}
           </button>
-          <p className="muted small" style={{ margin: 0 }}>
-            Modo offline-first: você pode usar o app sem conta; entre quando quiser sincronizar com a nuvem ({pendingOutbox} pendente(s) na fila local).
-          </p>
+          {pendingOutbox > 0 && (
+            <p className="muted small" style={{ margin: 0 }}>
+              Fila local: {pendingOutbox} pendente(s).
+            </p>
+          )}
         </div>
       )}
 
@@ -518,9 +517,9 @@ export default function Config() {
       <div className="card stack">
         <div className="row between">
           <div className="grow">
-            bloquear com Face ID
+            Face ID / WebAuthn
             <div className="muted small">
-              {lockConfig?.enabled ? 'ativo neste aparelho (WebAuthn + PIN)' : 'desativado'}
+              {lockConfig?.enabled ? 'ativo' : 'desativado'}
             </div>
           </div>
           <button
@@ -532,21 +531,15 @@ export default function Config() {
         </div>
 
         <div className="row between small">
-          <span className="muted">estado da tranca</span>
-          <b className={lockConfig?.enabled ? 'green' : 'muted'}>
-            {lockConfig?.enabled ? 'ativada' : 'desativada'}
-          </b>
-        </div>
-        <div className="row between small">
-          <span className="muted">credencial WebAuthn</span>
+          <span className="muted">credencial</span>
           <b className={lockConfig?.credentialId ? 'green' : 'amber'}>
             {lockConfig?.credentialId
-              ? `cadastrada (${lockConfig.credentialId.slice(0, 8)}…)`
-              : 'não cadastrada'}
+              ? `${lockConfig.credentialId.slice(0, 8)}…`
+              : 'ausente'}
           </b>
         </div>
         <div className="row between small">
-          <span className="muted">tempo configurado</span>
+          <span className="muted">timeout</span>
           <b>{formatTimeoutLabel(lockConfig?.timeoutMinutes ?? DEFAULT_LOCK_TIMEOUT_MINUTES)}</b>
         </div>
 
@@ -554,10 +547,7 @@ export default function Config() {
 
         <div className="stack">
           <div className="row between">
-            <div className="grow">
-              bloquear após segundo plano
-              <div className="muted small">0 = sempre ao abrir · ou após N minutos</div>
-            </div>
+            <div className="grow">bloquear após (min)</div>
             <button
               aria-label="menos minutos"
               onClick={() => void setLockTimeoutMinutes(Math.max(0, (lockConfig?.timeoutMinutes ?? DEFAULT_LOCK_TIMEOUT_MINUTES) - 1))}
@@ -576,7 +566,7 @@ export default function Config() {
           </div>
           <div className="row wrap">
             {[
-              [0, 'sempre ao abrir (0s)'],
+              [0, 'sempre (0s)'],
               [1, '1 min'],
               [5, '5 min'],
               [15, '15 min'],
@@ -594,9 +584,6 @@ export default function Config() {
             })}
           </div>
         </div>
-        <p className="muted small" style={{ margin: 0 }}>
-          A credencial biométrica e o hash do PIN ficam apenas neste aparelho (não vão para o Firestore nem para o backup).
-        </p>
       </div>
 
       <h2>notificações</h2>
@@ -796,18 +783,16 @@ export default function Config() {
 
       <h2>armazenamento</h2>
       <div className="card stack">
-        <div className="row between"><span>Armazenamento persistente</span><b style={{ color: persisted ? 'var(--green)' : 'var(--amber)' }}>{persisted === null ? '…' : persisted ? 'Sim' : 'Não'}</b></div>
+        <div className="row between"><span>Persistente</span><b style={{ color: persisted ? 'var(--green)' : 'var(--amber)' }}>{persisted === null ? '…' : persisted ? 'Sim' : 'Não'}</b></div>
         <div className="row between"><span>Em uso</span><b>{mb(usage.used)}</b></div>
-        <div className="row between"><span>Cota estimada</span><b>{mb(usage.quota)}</b></div>
-        {persisted === false && <button className="block" onClick={requestPersist}>Pedir armazenamento persistente</button>}
-        <p className="muted small" style={{ margin: 0 }}>Mesmo persistente e com nuvem, exporte backups em JSON periodicamente.</p>
+        <div className="row between"><span>Cota</span><b>{mb(usage.quota)}</b></div>
+        {persisted === false && <button className="block" onClick={requestPersist}>Ativar persistência</button>}
       </div>
 
-      <h2>snapshots internos</h2>
+      <h2>snapshots</h2>
       <div className="card">
-        <p className="muted small" style={{ marginTop: 0 }}>Cópias de segurança guardadas no próprio aparelho (um automático por semana de uso, os 5 mais recentes de cada tipo). Não substituem o backup exportado.</p>
-        <button className="small block" onClick={async () => { await createSnapshot('manual', 'Manual'); toast('Snapshot criado') }}>Criar snapshot agora</button>
-        {snaps.length === 0 && <p className="muted">Nenhum snapshot ainda.</p>}
+        <button className="small block" onClick={async () => { await createSnapshot('manual', 'Manual'); toast('Snapshot criado') }}>Criar snapshot</button>
+        {snaps.length === 0 && <p className="muted small">Nenhum snapshot.</p>}
         {snaps.map((s) => (
           <div key={s.id} className="item">
             <div className="grow">
@@ -822,25 +807,15 @@ export default function Config() {
       <h2>treino</h2>
       <div className="card">
         <div className="row between">
-          <div className="grow">tolerância do streak<div className="muted small">dias de descanso que mantêm a sequência</div></div>
+          <div className="grow">tolerância do streak (dias)</div>
           <button aria-label="menos" onClick={() => setSetting('streakGap', Math.max(0, gap - 1))}>-</button>
           <b style={{ width: 24, textAlign: 'center' }}>{gap}</b>
           <button aria-label="mais" onClick={() => setSetting('streakGap', Math.min(7, gap + 1))}>+</button>
         </div>
       </div>
 
-      <h2>privacidade (assistente de ia)</h2>
-      <div className="card stack">
-        <p className="muted small" style={{ margin: 0 }}>
-          Ao conversar na aba <b>~/assistente</b>, suas mensagens e apenas os resumos necessários dos seus dados locais (como treinos recentes, dieta do período ou peso, listados abaixo de cada resposta) são transmitidos via HTTPS pelo seu proxy no <b>Cloudflare Workers</b> e processados pela API do <b>Groq</b> para gerar a resposta.
-        </p>
-        <p className="muted small" style={{ margin: 0 }}>
-          O banco completo nunca é enviado, o histórico do chat fica salvo somente neste aparelho (fora do backup e do Firestore) e nenhuma escrita sugerida pela IA é gravada sem o seu toque explícito em confirmar.
-        </p>
-      </div>
-
       <p className="muted small" style={{ textAlign: 'center', marginTop: 20 }}>
-        Meu Treino · offline-first · {syncStatus.user ? 'sincronizado' : 'modo local'}
+        Meu Treino · {syncStatus.user ? 'sincronizado' : 'local'}
       </p>
 
       {pending && p && (

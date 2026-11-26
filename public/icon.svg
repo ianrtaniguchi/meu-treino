@@ -1,0 +1,88 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <!-- Fundo Obsidian / Midnight profundo com iluminação zenital sutil -->
+    <radialGradient id="obsidianBg" cx="35%" cy="22%" r="85%">
+      <stop offset="0%" stop-color="#121723" />
+      <stop offset="48%" stop-color="#0A0D14" />
+      <stop offset="100%" stop-color="#06080C" />
+    </radialGradient>
+
+    <!-- Brilho interno central sutil ouro champanhe -->
+    <radialGradient id="ambientGold" cx="50%" cy="50%" r="48%">
+      <stop offset="0%" stop-color="#D4AF37" stop-opacity="0.14" />
+      <stop offset="65%" stop-color="#D4AF37" stop-opacity="0.03" />
+      <stop offset="100%" stop-color="#000000" stop-opacity="0" />
+    </radialGradient>
+
+    <!-- Gradiente Metálico Champagne Gold / Platinum -->
+    <linearGradient id="champagneGold" x1="12%" y1="8%" x2="88%" y2="92%">
+      <stop offset="0%" stop-color="#F7E7B4" />
+      <stop offset="28%" stop-color="#DFBD69" />
+      <stop offset="52%" stop-color="#B89030" />
+      <stop offset="76%" stop-color="#E8CB7D" />
+      <stop offset="100%" stop-color="#9A741C" />
+    </linearGradient>
+
+    <!-- Gradiente de Chanfro Secundário (facetas em sombra) -->
+    <linearGradient id="champagneShadow" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#C8A248" />
+      <stop offset="50%" stop-color="#8A6616" />
+      <stop offset="100%" stop-color="#E5C878" />
+    </linearGradient>
+  </defs>
+
+  <!-- Base Escura Profunda -->
+  <rect width="512" height="512" rx="112" fill="url(#obsidianBg)" />
+  <rect width="512" height="512" rx="112" fill="url(#ambientGold)" />
+
+  <!-- Moldura Interna Fina Metálica (Estilo Black Card / Fintech Exclusiva) -->
+  <rect
+    x="26"
+    y="26"
+    width="460"
+    height="460"
+    rx="90"
+    fill="none"
+    stroke="url(#champagneGold)"
+    stroke-width="2.5"
+    stroke-opacity="0.45"
+  />
+  <rect
+    x="36"
+    y="36"
+    width="440"
+    height="440"
+    rx="82"
+    fill="none"
+    stroke="url(#champagneGold)"
+    stroke-width="1"
+    stroke-opacity="0.16"
+  />
+
+  <!-- Monograma Geométrico Contínuo Entrelaçado com Chanfros Precisos -->
+  <g transform="translate(0, 0)">
+    <!-- Elo Geométrico Esquerdo (Losango Chanfrado) -->
+    <path
+      d="M 186 156 L 278 248 L 256 270 L 186 200 L 118 268 L 186 336 L 234 288 L 256 310 L 186 380 L 74 268 Z"
+      fill="url(#champagneGold)"
+    />
+    <!-- Elo Geométrico Direito Entrelaçado (Continuidade Infinita) -->
+    <path
+      d="M 326 132 L 438 244 L 326 356 L 234 264 L 256 242 L 326 312 L 394 244 L 326 176 L 278 224 L 256 202 Z"
+      fill="url(#champagneShadow)"
+    />
+    <!-- Ponte Central Chanfrada de Alta Precisão -->
+    <polygon
+      points="256,222 290,256 256,290 222,256"
+      fill="url(#champagneGold)"
+    />
+    <polygon
+      points="256,240 272,256 256,272 240,256"
+      fill="#090C12"
+    />
+
+    <!-- Acentos Geométricos Cardinais Minimalistas -->
+    <polygon points="256,92 263,106 256,120 249,106" fill="url(#champagneGold)" opacity="0.72" />
+    <polygon points="256,392 263,406 256,420 249,406" fill="url(#champagneGold)" opacity="0.72" />
+  </g>
+</svg>

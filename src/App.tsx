@@ -23,7 +23,12 @@ import Onibus from './tabs/Onibus'
 import Config from './tabs/Config'
 import Icon from './components/Icons'
 import FirstLoginPrompt from './components/FirstLoginPrompt'
-import { BootOverlay, LockScreen, PromptTitle } from './components/TerminalChrome'
+import {
+  BootOverlay,
+  ChromeNavContext,
+  LockScreen,
+  PromptTitle,
+} from './components/TerminalChrome'
 import { useUi } from './components/ui'
 import {
   countUnreadNoticias,
@@ -35,12 +40,29 @@ import {
 } from './lib/notifications'
 
 type Tab = 'treino' | 'dieta' | 'corpo' | 'assistente' | 'noticias' | 'onibus' | 'config'
-const TABS: Tab[] = ['treino', 'dieta', 'corpo', 'assistente', 'noticias', 'onibus', 'config']
+const ALL_TABS: Tab[] = ['treino', 'dieta', 'corpo', 'assistente', 'noticias', 'onibus', 'config']
+/**
+ * Barra inferior Liquid Glass com o Agente de IA (`assistente`) posicionado exatamente
+ * no centro geométrico (50%) da cápsula:
+ * - Asa esquerda (42%): treino, dieta, corpo
+ * - Centro (16%, de 42% a 58%): assistente (IA)
+ * - Asa direita (42%): noticias, onibus
+ * - Configurações (`config`) movida para o gatilho implícito no topo.
+ */
+const NAV_TABS: Tab[] = ['treino', 'dieta', 'corpo', 'assistente', 'noticias', 'onibus']
+const NAV_SLOTS: Array<{ tab: Tab; left: number; width: number }> = [
+  { tab: 'treino', left: 0, width: 0.14 },
+  { tab: 'dieta', left: 0.14, width: 0.14 },
+  { tab: 'corpo', left: 0.28, width: 0.14 },
+  { tab: 'assistente', left: 0.42, width: 0.16 },
+  { tab: 'noticias', left: 0.58, width: 0.21 },
+  { tab: 'onibus', left: 0.79, width: 0.21 },
+]
 const TAB_LABELS: Record<Tab, string> = {
   treino: 'Treino (~/treino)',
   dieta: 'Dieta (~/dieta)',
   corpo: 'Corpo (~/corpo)',
-  assistente: 'Assistente IA (~/assistente)',
+  assistente: 'Agente IA (~/assistente)',
   noticias: 'Notícias do Ifes (~/noticias)',
   onibus: 'Ônibus Transcol / Ceturb-ES (~/onibus)',
   config: 'Configurações (~/config)',
@@ -55,22 +77,21 @@ export default function App() {
   const [tab, setTab] = useState<Tab>(() => {
     if (typeof window !== 'undefined') {
       const param = new URLSearchParams(window.location.search).get('tab')
-      if (param && (TABS as string[]).includes(param)) {
+      if (param && (ALL_TABS as string[]).includes(param)) {
         return param as Tab
       }
     }
     return 'treino'
   })
+  const [lastNonConfigTab, setLastNonConfigTab] = useState<Tab>('treino')
   const [bootVisible, setBootVisible] = useState(true)
   const [bootLines, setBootLines] = useState<string[]>(['> loading db...'])
-  // Na abertura a frio, a tranca começa ATIVA por padrão até confirmar getLockConfig()
   const [locked, setLocked] = useState<boolean>(true)
   const [hasUnlockedThisSession, setHasUnlockedThisSession] = useState<boolean>(false)
   const [tabPressing, setTabPressing] = useState<boolean>(false)
   const navRef = useRef<HTMLElement | null>(null)
   const pointerDownRef = useRef<boolean>(false)
 
-  // Estado compartilhado de notícias do Ifes para badge de não lidas + aba ~/noticias
   const [noticiasItems, setNoticiasItems] = useState<IfesNoticia[]>([])
   const [noticiasLoading, setNoticiasLoading] = useState<boolean>(false)
   const [noticiasError, setNoticiasError] = useState<string | null>(null)
@@ -92,6 +113,22 @@ export default function App() {
     hiddenAt: null,
   })
 
+  const selectTab = (next: Tab) => {
+    if (next !== 'config') {
+      setLastNonConfigTab(next)
+    }
+    setTab(next)
+  }
+
+  const toggleConfigTab = () => {
+    if (tab === 'config') {
+      setTab(lastNonConfigTab)
+    } else {
+      setLastNonConfigTab(tab)
+      setTab('config')
+    }
+  }
+
   useEffect(() => {
     const timer = window.setTimeout(() => setBootVisible(false), BOOT_MAX_MS)
     ;(async () => {
@@ -102,7 +139,7 @@ export default function App() {
         setLocked(coldLocked)
         setLockedState(coldLocked)
         if (coldLocked) {
-          setBootVisible(false) // Renderiza a tela de bloqueio imediatamente
+          setBootVisible(false)
         } else {
           setHasUnlockedThisSession(true)
         }
@@ -126,7 +163,6 @@ export default function App() {
     return () => window.clearTimeout(timer)
   }, [])
 
-  // Persiste instante de segundo plano e bloqueia ao retornar (visibilitychange, pagehide, pageshow)
   useEffect(() => {
     const onHidden = () => {
       void recordHiddenTimestamp(Date.now())
@@ -164,7 +200,6 @@ export default function App() {
     }
   }, [])
 
-  // Assinatura em tempo real da coleção ifesNoticias para o badge e para a aba ~/noticias
   useEffect(() => {
     if (!ready || !syncStatus.user) {
       setNoticiasItems([])
@@ -189,7 +224,6 @@ export default function App() {
     return () => unsub()
   }, [ready, syncStatus.user?.uid])
 
-  // Listener de mensagens do Service Worker (clique na notificação ou push recebido) e FCM em primeiro plano
   useEffect(() => {
     if (!ready || typeof window === 'undefined') return
 
@@ -197,19 +231,22 @@ export default function App() {
       const data = event.data
       if (!data || typeof data !== 'object') return
       if (data.type === 'IFES_OPEN_TAB') {
-        const targetTab = typeof data.tab === 'string' && (TABS as string[]).includes(data.tab) ? (data.tab as Tab) : 'noticias'
-        setTab(targetTab)
+        const targetTab =
+          typeof data.tab === 'string' && (ALL_TABS as string[]).includes(data.tab)
+            ? (data.tab as Tab)
+            : 'noticias'
+        selectTab(targetTab)
       } else if (data.type === 'IFES_PUSH_RECEIVED') {
         const ts = typeof data.receivedAt === 'number' ? data.receivedAt : Date.now()
         void recordLastNotificationReceived(ts)
         const title = typeof data.title === 'string' ? data.title : 'Nova notícia do Ifes'
-        toast(`[ifes] ${title}`, { label: 'abrir', run: () => setTab('noticias') })
+        toast(`[ifes] ${title}`, { label: 'abrir', run: () => selectTab('noticias') })
       }
     }
 
     navigator.serviceWorker?.addEventListener?.('message', onSwMessage)
     const unsubFg = initForegroundPushListener(({ title }) => {
-      toast(`[ifes] ${title}`, { label: 'abrir', run: () => setTab('noticias') })
+      toast(`[ifes] ${title}`, { label: 'abrir', run: () => selectTab('noticias') })
     })
 
     return () => {
@@ -235,7 +272,7 @@ export default function App() {
       <div className="scroll">
         <PromptTitle path="~/erro" />
         <p className="red">error: {error}</p>
-        <p className="muted">Se estiver em modo privado do Safari, abra o app instalado na Tela de Início.</p>
+        <p className="muted">Abra pelo ícone instalado na Tela de Início.</p>
       </div>
     )
 
@@ -246,7 +283,6 @@ export default function App() {
     return bootVisible ? <BootOverlay lines={bootLines} onSkip={() => setBootVisible(false)} /> : null
   }
 
-  // Na abertura a frio com tranca ativa, renderiza APENAS a tela de bloqueio antes de qualquer conteúdo
   if (locked && lockConfig.enabled && !hasUnlockedThisSession) {
     return (
       <div className="app">
@@ -258,12 +294,12 @@ export default function App() {
   if (!onboarded)
     return (
       <div className="scroll">
-        <PromptTitle path="~/antes-de-comecar" />
+        <PromptTitle path="~/inicio" />
         <div className="card stack">
-          <div><b>Instale o app na Tela de Início ANTES de registrar dados.</b> No iPhone, os dados do Safari e do app instalado são separados.</div>
-          <div className="muted small"># Safari: compartilhar → "Adicionar à Tela de Início". Depois abra sempre pelo ícone. Faça backups com frequência em ~/config.</div>
+          <div><b>Adicione o app à Tela de Início antes de usar.</b></div>
+          <div className="muted small">Safari → Compartilhar → Adicionar à Tela de Início.</div>
         </div>
-        <button className="primary block" onClick={() => setSetting('onboardingDone', true)}>entendi</button>
+        <button className="primary block" onClick={() => setSetting('onboardingDone', true)}>começar</button>
       </div>
     )
 
@@ -271,7 +307,9 @@ export default function App() {
   const stale = Date.now() - ref > WEEK
   const days = Math.floor((Date.now() - ref) / 86400000)
   const isCurrentlyLocked = Boolean(locked && lockConfig.enabled)
-  const activeTabIndex = Math.max(0, TABS.indexOf(tab))
+  const navIdx = NAV_TABS.indexOf(tab)
+  const activeTabIndex = navIdx >= 0 ? navIdx : Math.max(0, NAV_TABS.indexOf(lastNonConfigTab))
+  const activeSlot = NAV_SLOTS[activeTabIndex] ?? NAV_SLOTS[0]
 
   const pickTabFromClientX = (clientX: number) => {
     const navEl = navRef.current
@@ -280,106 +318,122 @@ export default function App() {
     const innerLeft = rect.left + 5
     const innerWidth = Math.max(1, rect.width - 10)
     const rel = Math.min(0.9999, Math.max(0, (clientX - innerLeft) / innerWidth))
-    const idx = Math.floor(rel * TABS.length)
-    const nextTab = TABS[idx]
-    if (nextTab && nextTab !== tab) {
-      setTab(nextTab)
+    const hit =
+      NAV_SLOTS.find((s) => rel >= s.left && rel < s.left + s.width) ??
+      NAV_SLOTS[NAV_SLOTS.length - 1]
+    if (hit && hit.tab !== tab) {
+      selectTab(hit.tab)
     }
   }
 
   return (
-    <div className="app">
-      {bootVisible && !isCurrentlyLocked && <BootOverlay lines={bootLines} onSkip={() => setBootVisible(false)} />}
-      {isCurrentlyLocked && (
-        <LockScreen config={lockConfig} onUnlocked={handleUnlocked} />
-      )}
-      <main
-        className="scroll"
-        style={isCurrentlyLocked ? { visibility: 'hidden', pointerEvents: 'none' } : undefined}
-        aria-hidden={isCurrentlyLocked}
-      >
-        {stale && (
-          <div className="banner" onClick={() => setTab('config')}>
-            {lastBackup ? `warn: último backup há ${days} dias.` : 'warn: nenhum backup feito ainda.'} toque para fazer agora.
-          </div>
+    <ChromeNavContext.Provider
+      value={{
+        isConfigActive: tab === 'config',
+        hasConfigAlert: stale,
+        onToggleConfig: toggleConfigTab,
+      }}
+    >
+      <div className="app">
+        {bootVisible && !isCurrentlyLocked && <BootOverlay lines={bootLines} onSkip={() => setBootVisible(false)} />}
+        {isCurrentlyLocked && (
+          <LockScreen config={lockConfig} onUnlocked={handleUnlocked} />
         )}
-        {tab === 'treino' && <Treino />}
-        {tab === 'dieta' && <Dieta />}
-        {tab === 'corpo' && <Corpo />}
-        {tab === 'assistente' && <Assistente />}
-        {tab === 'noticias' && (
-          <Noticias
-            items={noticiasItems}
-            loading={noticiasLoading}
-            error={noticiasError}
-            onManualRefresh={refreshNoticiasManual}
+        <main
+          className="scroll"
+          style={isCurrentlyLocked ? { visibility: 'hidden', pointerEvents: 'none' } : undefined}
+          aria-hidden={isCurrentlyLocked}
+        >
+          {stale && tab !== 'config' && (
+            <div className="banner" onClick={() => selectTab('config')}>
+              {lastBackup ? `Backup há ${days}d` : 'Sem backup exportado'} · exportar agora
+            </div>
+          )}
+          {tab === 'treino' && <Treino />}
+          {tab === 'dieta' && <Dieta />}
+          {tab === 'corpo' && <Corpo />}
+          {tab === 'assistente' && <Assistente />}
+          {tab === 'noticias' && (
+            <Noticias
+              items={noticiasItems}
+              loading={noticiasLoading}
+              error={noticiasError}
+              onManualRefresh={refreshNoticiasManual}
+            />
+          )}
+          {tab === 'onibus' && <Onibus />}
+          {tab === 'config' && <Config />}
+        </main>
+        <nav
+          ref={navRef}
+          className={`tabbar${tabPressing ? ' pressing' : ''}`}
+          style={
+            {
+              '--active-idx': activeTabIndex,
+              '--tab-count': NAV_TABS.length,
+              '--lens-left': activeSlot.left,
+              '--lens-width': activeSlot.width,
+              ...(isCurrentlyLocked ? { visibility: 'hidden', pointerEvents: 'none' } : {}),
+            } as CSSProperties
+          }
+          aria-label="Navegação principal"
+          aria-hidden={isCurrentlyLocked}
+          onPointerDown={() => {
+            pointerDownRef.current = true
+            setTabPressing(true)
+          }}
+          onPointerMove={(e) => {
+            if (!pointerDownRef.current) return
+            pickTabFromClientX(e.clientX)
+          }}
+          onPointerUp={() => {
+            pointerDownRef.current = false
+            setTabPressing(false)
+          }}
+          onPointerCancel={() => {
+            pointerDownRef.current = false
+            setTabPressing(false)
+          }}
+          onPointerLeave={() => {
+            pointerDownRef.current = false
+            setTabPressing(false)
+          }}
+        >
+          <span
+            className={`tabbar-lens${navIdx < 0 ? ' hidden' : ''}`}
+            aria-hidden="true"
           />
+          {NAV_SLOTS.map(({ tab: k, width }) => {
+            const isActive = tab === k
+            const isAi = k === 'assistente'
+            const label = TAB_LABELS[k]
+            return (
+              <button
+                key={k}
+                type="button"
+                className={`${isActive ? 'on' : ''}${isAi ? ' ai-center' : ''}`.trim()}
+                style={{ flex: `0 0 ${width * 100}%` }}
+                onClick={() => selectTab(k)}
+                aria-label={label}
+                aria-current={isActive ? 'page' : undefined}
+                title={label}
+              >
+                <span className={`tabbar-icon-wrap${isAi ? ' ai-halo' : ''}`}>
+                  <Icon name={k} />
+                  {k === 'noticias' && unreadNoticiasCount > 0 && (
+                    <span className="tab-badge" aria-label={`${unreadNoticiasCount} não lidas`}>
+                      {unreadNoticiasCount > 99 ? '99+' : unreadNoticiasCount}
+                    </span>
+                  )}
+                </span>
+              </button>
+            )
+          })}
+        </nav>
+        {syncStatus.firstLoginPreview && !isCurrentlyLocked && (
+          <FirstLoginPrompt preview={syncStatus.firstLoginPreview} syncing={syncStatus.syncing} />
         )}
-        {tab === 'onibus' && <Onibus />}
-        {tab === 'config' && <Config />}
-      </main>
-      <nav
-        ref={navRef}
-        className={`tabbar${tabPressing ? ' pressing' : ''}`}
-        style={
-          {
-            '--active-idx': activeTabIndex,
-            '--tab-count': TABS.length,
-            ...(isCurrentlyLocked ? { visibility: 'hidden', pointerEvents: 'none' } : {}),
-          } as CSSProperties
-        }
-        aria-label="Navegação principal"
-        aria-hidden={isCurrentlyLocked}
-        onPointerDown={() => {
-          pointerDownRef.current = true
-          setTabPressing(true)
-        }}
-        onPointerMove={(e) => {
-          if (!pointerDownRef.current) return
-          pickTabFromClientX(e.clientX)
-        }}
-        onPointerUp={() => {
-          pointerDownRef.current = false
-          setTabPressing(false)
-        }}
-        onPointerCancel={() => {
-          pointerDownRef.current = false
-          setTabPressing(false)
-        }}
-        onPointerLeave={() => {
-          pointerDownRef.current = false
-          setTabPressing(false)
-        }}
-      >
-        <span className="tabbar-lens" aria-hidden="true" />
-        {TABS.map((k) => {
-          const isActive = tab === k
-          const label = TAB_LABELS[k]
-          return (
-            <button
-              key={k}
-              type="button"
-              className={isActive ? 'on' : ''}
-              onClick={() => setTab(k)}
-              aria-label={label}
-              aria-current={isActive ? 'page' : undefined}
-              title={label}
-            >
-              <span className="tabbar-icon-wrap">
-                <Icon name={k} />
-                {k === 'noticias' && unreadNoticiasCount > 0 && (
-                  <span className="tab-badge" aria-label={`${unreadNoticiasCount} não lidas`}>
-                    {unreadNoticiasCount > 99 ? '99+' : unreadNoticiasCount}
-                  </span>
-                )}
-              </span>
-            </button>
-          )
-        })}
-      </nav>
-      {syncStatus.firstLoginPreview && !isCurrentlyLocked && (
-        <FirstLoginPrompt preview={syncStatus.firstLoginPreview} syncing={syncStatus.syncing} />
-      )}
-    </div>
+      </div>
+    </ChromeNavContext.Provider>
   )
 }

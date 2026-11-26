@@ -50,6 +50,39 @@ export default function Assistente() {
   const [voiceState, setVoiceState] = useState<'idle' | 'recording' | 'transcribing'>('idle')
   const [recordSec, setRecordSec] = useState(0)
   const recorderRef = useRef<ActiveAudioRecorder | null>(null)
+  const chatBottomRef = useRef<HTMLDivElement | null>(null)
+  const didInitialScrollRef = useRef<boolean>(false)
+
+  const scrollToChatBottom = (behavior: ScrollBehavior = 'smooth') => {
+    if (typeof window === 'undefined') return
+    window.requestAnimationFrame(() => {
+      if (chatBottomRef.current && typeof chatBottomRef.current.scrollIntoView === 'function') {
+        chatBottomRef.current.scrollIntoView({ behavior, block: 'end' })
+      } else {
+        const docEl = document.scrollingElement || document.documentElement
+        window.scrollTo({ top: docEl.scrollHeight, behavior })
+      }
+    })
+  }
+
+  // Auto-scroll ao montar a aba, ao enviar mensagem, ao receber resposta da IA e ao abrir teclado mobile
+  useEffect(() => {
+    if (history.length === 0 && !busy) return
+    const behavior: ScrollBehavior = didInitialScrollRef.current ? 'smooth' : 'auto'
+    didInitialScrollRef.current = true
+    scrollToChatBottom(behavior)
+  }, [history.length, busy, voiceState])
+
+  useEffect(() => {
+    scrollToChatBottom('auto')
+    const vv = typeof window !== 'undefined' ? window.visualViewport : null
+    if (!vv) return
+    const onViewportResize = () => {
+      scrollToChatBottom('smooth')
+    }
+    vv.addEventListener('resize', onViewportResize)
+    return () => vv.removeEventListener('resize', onViewportResize)
+  }, [])
 
   useEffect(() => {
     const onStatus = () => setOnline(navigator.onLine !== false)
@@ -260,38 +293,32 @@ export default function Assistente() {
 
   return (
     <>
-      <div className="row between" style={{ alignItems: 'baseline' }}>
-        <PromptTitle path="~/assistente" />
-        {history.length > 0 && (
-          <button className="small" disabled={busy} onClick={() => void handleClear()}>
-            limpar
-          </button>
-        )}
-      </div>
+      <PromptTitle
+        path="~/assistente"
+        rightSlot={
+          history.length > 0 ? (
+            <button className="small" disabled={busy} onClick={() => void handleClear()}>
+              limpar
+            </button>
+          ) : undefined
+        }
+      />
 
       {!syncStatus.user && (
-        <div className="card stack" style={{ borderColor: 'var(--amber)' }}>
+        <div className="card" style={{ borderColor: 'var(--amber)' }}>
           <div className="amber small">
-            warn: você está deslogado. O assistente exige autenticação na nuvem (token Firebase).
-          </div>
-          <div className="muted small">
-            Acesse a aba <b>~/config</b> e entre com seu e-mail e senha para usar o assistente.
+            Entre na conta em <b>~/config</b> para usar o assistente.
           </div>
         </div>
       )}
 
       {syncStatus.user && !online && (
-        <div className="card stack" style={{ borderColor: 'var(--amber)' }}>
-          <div className="amber small">
-            warn: aparelho offline. Conecte-se à internet para enviar mensagens ao assistente.
-          </div>
+        <div className="card" style={{ borderColor: 'var(--amber)' }}>
+          <div className="amber small">Offline · conecte-se para enviar mensagens.</div>
         </div>
       )}
 
-      <div className="card stack">
-        <div className="muted small">
-          Coach de calistenia e nutrição conectado aos seus dados locais (leitura sob demanda). Nenhuma alteração é salva sem sua confirmação.
-        </div>
+      <div className="card">
         <div className="chips">
           {QUICK_PROMPTS.map((q) => (
             <button
@@ -308,7 +335,7 @@ export default function Assistente() {
 
       {history.length === 0 ? (
         <div className="card muted small">
-          Nenhuma mensagem no histórico local. Pergunte sobre sua evolução nos exercícios, volume da semana, metas de proteína ou peça para montar um rascunho de refeição/rotina.
+          Sem mensagens. Escolha um atalho acima ou envie abaixo.
         </div>
       ) : (
         <div className="stack">
@@ -371,7 +398,7 @@ export default function Assistente() {
                     fontSize: 11,
                   }}
                 >
-                  dados enviados ao assistente: {m.dataSent.join(' · ')}
+                  contexto: {m.dataSent.join(' · ')}
                 </div>
               )}
             </div>
@@ -386,20 +413,19 @@ export default function Assistente() {
       )}
 
       <div className="card stack" style={{ marginTop: 10 }}>
-        <label className="field">
-          <span className="muted small">mensagem</span>
-          <textarea
-            rows={2}
-            value={input}
-            disabled={!canUse || busy || voiceState !== 'idle'}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder={
-              canUse
-                ? 'Ex.: Analise meu treino da semana, me lembra às 18h de tomar creatina…'
-                : 'Entre na conta em ~/config e fique online para usar o assistente'
-            }
-          />
-        </label>
+        <textarea
+          rows={2}
+          value={input}
+          disabled={!canUse || busy || voiceState !== 'idle'}
+          onChange={(e) => setInput(e.target.value)}
+          onFocus={() => scrollToChatBottom('smooth')}
+          aria-label="Mensagem para o assistente"
+          placeholder={
+            canUse
+              ? 'Pergunte sobre treinos, dieta ou crie um lembrete…'
+              : 'Entre na conta em ~/config para usar o assistente'
+          }
+        />
 
         {voiceState === 'recording' && (
           <div
@@ -407,8 +433,8 @@ export default function Assistente() {
             style={{ background: 'var(--bg)', borderColor: 'var(--amber)', marginBottom: 0 }}
           >
             <div className="row between">
-              <b className="amber">● gravando áudio · {fmtRecTimer(recordSec)}</b>
-              <span className="muted small">whisper-large-v3-turbo</span>
+              <b className="amber">● gravando · {fmtRecTimer(recordSec)}</b>
+              <span className="muted small">whisper</span>
             </div>
             <div className="grid2">
               <button
@@ -425,7 +451,7 @@ export default function Assistente() {
               </button>
             </div>
             <button className="small danger block" onClick={handleCancelVoice}>
-              cancelar gravação
+              cancelar
             </button>
           </div>
         )}
@@ -435,7 +461,7 @@ export default function Assistente() {
             className="card small"
             style={{ background: 'var(--bg)', borderColor: 'var(--green)', marginBottom: 0 }}
           >
-            <span className="green">&gt; transcrevendo áudio por voz (whisper)…</span>
+            <span className="green">&gt; transcrevendo áudio…</span>
           </div>
         )}
 
@@ -446,7 +472,7 @@ export default function Assistente() {
               disabled={!canUse || busy || !input.trim()}
               onClick={() => void handleSend()}
             >
-              {busy ? 'consultando assistente…' : 'enviar'}
+              {busy ? 'respondendo…' : 'enviar'}
             </button>
             <button
               className="ai"
@@ -459,6 +485,7 @@ export default function Assistente() {
           </div>
         )}
       </div>
+      <div ref={chatBottomRef} aria-hidden="true" style={{ height: 2 }} />
     </>
   )
 }

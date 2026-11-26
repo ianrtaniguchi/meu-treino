@@ -304,20 +304,26 @@ button, input, select, textarea { font-family: var(--mono); font-variant-numeric
   position: absolute;
   top: 5px;
   bottom: 5px;
-  left: 5px;
-  width: calc((100% - 10px) / var(--tab-count, 6));
+  left: calc(5px + (100% - 10px) * var(--lens-left, 0));
+  width: calc((100% - 10px) * var(--lens-width, 0.1667));
   border-radius: 9999px;
   pointer-events: none;
   z-index: 0;
   background: var(--lens-bg);
   border: 1px solid var(--lens-border);
   box-shadow: var(--lens-shadow);
-  transform: translate3d(calc(var(--active-idx, 0) * 100%), 0, 0) scale(var(--lens-scale, 1));
+  transform: scale(var(--lens-scale, 1));
   transition:
-    transform 380ms cubic-bezier(0.22, 1, 0.36, 1),
+    left 380ms cubic-bezier(0.22, 1, 0.36, 1),
+    width 380ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 240ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 200ms ease,
     background 220ms ease,
     box-shadow 220ms ease;
-  will-change: transform;
+  will-change: left, width, transform;
+}
+.tabbar-lens.hidden {
+  opacity: 0;
 }
 .tabbar.pressing .tabbar-lens {
   --lens-scale: 1.06;
@@ -380,6 +386,40 @@ button, input, select, textarea { font-family: var(--mono); font-variant-numeric
   width: 28px;
   height: 28px;
 }
+/* Destaque central elegante do botão da IA (~18% maior com halo Liquid Glass) */
+.tabbar button.ai-center {
+  color: var(--text);
+}
+.tabbar button.ai-center svg {
+  width: 28px;
+  height: 28px;
+  stroke-width: 1.95;
+}
+.tabbar-icon-wrap.ai-halo {
+  width: 44px;
+  height: 44px;
+  border-radius: 9999px;
+  background: radial-gradient(
+    circle at 50% 25%,
+    rgba(255, 255, 255, 0.2) 0%,
+    rgba(56, 189, 248, 0.16) 52%,
+    rgba(57, 211, 83, 0.12) 100%
+  );
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.32),
+    0 0 14px rgba(56, 189, 248, 0.18);
+  transition:
+    transform 240ms cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 240ms ease,
+    border-color 220ms ease;
+}
+.tabbar button.ai-center.on .tabbar-icon-wrap.ai-halo {
+  border-color: var(--green);
+  box-shadow:
+    inset 0 1px 2px rgba(255, 255, 255, 0.42),
+    0 0 18px rgba(57, 211, 83, 0.34);
+}
 .tab-badge {
   position: absolute; top: -4px; right: -8px;
   min-width: 16px; height: 16px; padding: 0 4px;
@@ -422,7 +462,62 @@ h3 { font-size: 14px; font-weight: 600; margin: 0; }
   background: var(--bg); font-size: 10px;
 }
 
-/* prompt de comando no título */
+/* prompt de comando no título + gatilho implícito de configurações no topo */
+.prompt-header-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 4px 0 14px;
+}
+.prompt-header-bar .prompt-title {
+  margin: 0;
+}
+.prompt-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.implicit-config-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  min-height: 36px;
+  padding: 0;
+  border-radius: 9999px;
+  border: 1px solid transparent;
+  background: transparent;
+  box-shadow: none;
+  color: var(--muted);
+  opacity: 0.78;
+}
+.implicit-config-btn svg {
+  width: 19px;
+  height: 19px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.85;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.implicit-config-btn.on {
+  color: var(--green);
+  border-color: var(--green);
+  background: var(--btn-on-bg);
+  opacity: 1;
+}
+.implicit-config-dot {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--amber);
+}
 .prompt-title { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .prompt-dollar { color: var(--green); font-weight: 600; }
 .prompt-cursor {

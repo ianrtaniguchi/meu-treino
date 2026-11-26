@@ -152,11 +152,11 @@ export default function Dieta() {
           </div>
         ))}
         <p className="muted small" style={{ marginBottom: 0 }}>
-          Média nos dias registrados: {fmtNum(avg('kcal'))} kcal · {fmtNum(avg('p'))} g de proteína
+          Média: {fmtNum(avg('kcal'))} kcal · {fmtNum(avg('p'))}g prot
         </p>
       </div>
 
-      <button className="block" onClick={() => setShowFoods(true)}>Gerenciar alimentos salvos</button>
+      <button className="block" onClick={() => setShowFoods(true)}>Alimentos salvos</button>
 
       {adding && <AddFood type={adding} date={date} onClose={() => setAdding(null)} />}
       {showGoals && <GoalsSheet goals={goals} onClose={() => setShowGoals(false)} />}

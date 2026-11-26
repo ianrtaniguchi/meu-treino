@@ -134,12 +134,7 @@ export default function Noticias({
 
       <div className="card stack">
         <div className="row between">
-          <div>
-            <b>Ifes · Campus Vitória</b>
-            <div className="muted small">
-              fonte oficial: vitoria.ifes.edu.br/noticias
-            </div>
-          </div>
+          <b>Ifes · Campus Vitória</b>
           <span className={`chip ${unreadCount > 0 ? 'green' : ''}`}>
             {unreadCount > 0 ? `${unreadCount} não lida(s)` : 'tudo lido'}
           </span>
@@ -158,7 +153,7 @@ export default function Noticias({
               className="small"
               onClick={() => void markAllIfesNewsRead(items.map((x) => x.id))}
             >
-              marcar todas como lidas
+              marcar lidas
             </button>
           )}
         </div>
@@ -171,9 +166,9 @@ export default function Noticias({
       </div>
 
       {!syncStatus.user && (
-        <div className="card stack">
-          <div className="amber">
-            warn: faça login em <b>~/config</b> (sincronização em nuvem) para carregar o histórico de notícias do Firestore.
+        <div className="card">
+          <div className="amber small">
+            Entre na conta em <b>~/config</b> para sincronizar notícias.
           </div>
         </div>
       )}
@@ -181,9 +176,6 @@ export default function Noticias({
       {syncStatus.user && error && (
         <div className="card stack" style={{ borderColor: 'var(--red)' }}>
           <div className="red">error: {error}</div>
-          <div className="muted small">
-            Verifique sua conexão ou se as regras do Firestore (`ifesNoticias`) já foram publicadas.
-          </div>
           <button className="small" onClick={() => void handleRefresh()}>
             tentar novamente
           </button>
@@ -192,17 +184,12 @@ export default function Noticias({
 
       {syncStatus.user && loading && items.length === 0 && !error && (
         <div className="card">
-          <div className="muted small">&gt; carregando notícias do Campus Vitória…</div>
+          <div className="muted small">&gt; carregando…</div>
         </div>
       )}
 
       {syncStatus.user && !loading && !error && items.length === 0 && (
-        <div className="card stack">
-          <div><b>Nenhuma notícia sincronizada ainda.</b></div>
-          <div className="muted small">
-            O Worker coleta novas notícias do Ifes Campus Vitória a cada 20 minutos. Na primeira execução do cron, o histórico inicial é populado automaticamente sem disparar spam de push.
-          </div>
-        </div>
+        <div className="card muted small">Nenhuma notícia sincronizada ainda.</div>
       )}
 
       {items.map((item) => {

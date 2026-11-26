@@ -1,7 +1,8 @@
 import { useLiveQuery } from 'dexie-react-hooks'
-import { useEffect, useState } from 'react'
+import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
 import { DB_VERSION, db } from '../data/db'
 import { useSyncStatus } from '../hooks'
+import Icon from './Icons'
 import {
   authenticateBiometricCredential,
   computePinBackoffMs,
@@ -12,6 +13,16 @@ import {
   verifyPin,
   type LockConfig,
 } from '../lib/lock'
+
+export interface ChromeNavContextValue {
+  isConfigActive: boolean
+  hasConfigAlert?: boolean
+  onToggleConfig?: () => void
+}
+
+export const ChromeNavContext = createContext<ChromeNavContextValue>({
+  isConfigActive: false,
+})
 
 export const APP_VERSION = `1.0.${DB_VERSION}`
 
@@ -80,13 +91,40 @@ export function Statusline() {
   )
 }
 
-/** Título em formato de prompt de comando (ex.: "~/treino $") com cursor piscando. */
-export function PromptTitle({ path }: { path: string }) {
+/** Título em formato de prompt de comando (ex.: "~/treino $") com gatilho implícito de Configurações no topo. */
+export function PromptTitle({
+  path,
+  rightSlot,
+}: {
+  path: string
+  rightSlot?: ReactNode
+}) {
+  const { isConfigActive, hasConfigAlert, onToggleConfig } = useContext(ChromeNavContext)
+
   return (
-    <h1 className="prompt-title">
-      <span>{path}</span> <span className="prompt-dollar">$</span>
-      <span className="prompt-cursor" aria-hidden="true" />
-    </h1>
+    <div className="prompt-header-bar">
+      <h1 className="prompt-title">
+        <span>{path}</span> <span className="prompt-dollar">$</span>
+        <span className="prompt-cursor" aria-hidden="true" />
+      </h1>
+      <div className="prompt-header-actions">
+        {rightSlot}
+        {onToggleConfig && (
+          <button
+            type="button"
+            className={`implicit-config-btn${isConfigActive ? ' on' : ''}`}
+            onClick={onToggleConfig}
+            aria-label={isConfigActive ? 'Voltar da tela de configurações' : 'Configurações (~/config)'}
+            title={isConfigActive ? 'Voltar' : 'Configurações (~/config)'}
+          >
+            <Icon name="config" />
+            {hasConfigAlert && !isConfigActive && (
+              <span className="implicit-config-dot" aria-hidden="true" />
+            )}
+          </button>
+        )}
+      </div>
+    </div>
   )
 }
 

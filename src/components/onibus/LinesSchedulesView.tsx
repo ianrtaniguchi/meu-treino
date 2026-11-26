@@ -59,16 +59,11 @@ export default function LinesSchedulesView({
       {/* Linhas Favoritas fixadas no topo para acesso em 1 toque */}
       <div className="card stack">
         <div className="row between">
-          <b>★ Linhas Favoritas</b>
-          <span className="muted small">
-            {favoriteLines.length > 0 ? '1 toque para abrir' : 'toque em ☆ para fixar'}
-          </span>
+          <b>★ Favoritas</b>
+          <span className="muted small">{favoriteLines.length}</span>
         </div>
         {favoriteLines.length === 0 ? (
-          <div className="muted small">
-            Nenhuma linha favoritada ainda. Toque na estrela ao lado de qualquer linha (ex.: 500,
-            503, 506) para fixá-la aqui no topo.
-          </div>
+          <div className="muted small">Toque em ☆ em uma linha para fixar no topo.</div>
         ) : (
           <div className="chips">
             {favoriteLines.map((fav) => (
@@ -88,16 +83,13 @@ export default function LinesSchedulesView({
 
       {/* Campo de Busca Rápida por número ou nome/bairro/terminal */}
       <div className="card stack">
-        <label className="field">
-          Buscar linha por número, terminal, bairro ou campus
-          <input
-            type="search"
-            placeholder="Ex.: 500, 506, Laranjeiras, Vila Velha, Ifes..."
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            aria-label="Buscar linha de ônibus"
-          />
-        </label>
+        <input
+          type="search"
+          placeholder="Buscar linha, terminal ou bairro (ex.: 500, Ifes)..."
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          aria-label="Buscar linha de ônibus"
+        />
         <div className="chips">
           {QUICK_FILTERS.map((tag) => {
             const active = query.toLowerCase() === tag.toLowerCase()

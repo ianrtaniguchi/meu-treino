@@ -56,7 +56,7 @@ export default function Corpo() {
         <Field label="Data" type="date" value={date} mode="text" onChange={setDate} />
         <Field label={`Peso (kg)${existing?.weight ? ` — atual: ${fmtNum(existing.weight)}` : ''}`} value={weight} onChange={setWeight} />
         <details>
-          <summary style={{ minHeight: 44, display: 'flex', alignItems: 'center' }}>Medidas (cm) — opcional</summary>
+          <summary style={{ minHeight: 44, display: 'flex', alignItems: 'center' }}>Medidas (cm)</summary>
           <div className="grid2">
             {MEASURES.map(([k, label]) => (
               <Field key={k} label={label} value={m[k] ?? ''} placeholder={existing?.measures[k] ? String(existing.measures[k]) : ''}
@@ -64,7 +64,7 @@ export default function Corpo() {
             ))}
           </div>
         </details>
-        <button className="primary block" onClick={save}>{existing ? 'Atualizar registro do dia' : 'Salvar registro'}</button>
+        <button className="primary block" onClick={save}>{existing ? 'Atualizar' : 'Salvar'}</button>
       </div>
 
       {last && (
@@ -77,7 +77,7 @@ export default function Corpo() {
       <h2>evolução</h2>
       <label className="f">
         <select value={metric} onChange={(e) => setMetric(e.target.value)}>
-          <option value="peso">Peso (com média móvel de 7 dias)</option>
+          <option value="peso">Peso (média 7d)</option>
           {MEASURES.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
         </select>
       </label>
