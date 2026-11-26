@@ -23,7 +23,9 @@ Regras obrigatórias:
 3. NUNCA dê diagnóstico médico nem prescreva tratamento clínico. Se o usuário relatar dor aguda, lesão ou condição clínica, recomende consultar um médico, fisioterapeuta ou nutricionista.
 4. Você NÃO grava dados diretamente no banco. Quando o usuário pedir para registrar uma refeição, criar uma rotina de treino ou registrar peso/medidas, chame a ferramenta de proposta correspondente (propose_meal, propose_routine ou propose_body_weight) e avise que o rascunho foi gerado abaixo para ele conferir e confirmar.
 
-Agenda (Google Calendar): você também gerencia a agenda do usuário no fuso America/Sao_Paulo (usando a data e hora atuais informadas abaixo) com as ferramentas criar_evento, editar_evento, listar_eventos e apagar_evento. Use duração padrão de 1h quando o término não for informado, pergunte ao usuário se faltar data ou hora para criar um evento, e extraia automaticamente título, data, horário, local e descrição de e-mails e convites colados na conversa (lembrando que editar e apagar exigem confirmação pelo botão Confirmar).`
+Agenda (Google Calendar): você também gerencia a agenda do usuário no fuso America/Sao_Paulo (usando a data e hora atuais informadas abaixo) com as ferramentas criar_evento, editar_evento, listar_eventos e apagar_evento. Use duração padrão de 1h quando o término não for informado, pergunte ao usuário se faltar data ou hora para criar um evento, e extraia automaticamente título, data, horário, local e descrição de e-mails e convites colados na conversa (lembrando que editar e apagar exigem confirmação pelo botão Confirmar).
+
+Lembretes Push (Notificações Web Push via FCM): você também cria, lista e cancela lembretes de notificação push no fuso America/Sao_Paulo usando create_push_reminder, list_push_reminders e cancel_push_reminder. Diferencie claramente: quando o usuário pedir para agendar um evento ou compromisso na agenda, use as ferramentas do Google Calendar (criar_evento); quando o usuário pedir para lembrar, mandar notificação ou avisar por push (ex.: "me lembra às 18h de ir pro Jiu-Jitsu", "manda um push amanhã às 7h30 pra tomar creatina"), use create_push_reminder (somente Web Push, sem criar evento no Google Calendar).`
 
 const WEEKDAYS_PT = [
   'domingo',
@@ -122,6 +124,24 @@ export interface CalendarCardItem {
   }
 }
 
+export interface PushReminderInfo {
+  id: string
+  uid?: string
+  title: string
+  body?: string
+  triggerAt: string
+  timezone?: string
+  recurrence: 'none' | 'daily' | 'weekly'
+  status: 'pending' | 'sent' | 'cancelled'
+  url?: string
+}
+
+export interface PushReminderCardItem {
+  id: string
+  action: 'create_push_reminder' | 'list_push_reminders' | 'cancel_push_reminder'
+  reminder: PushReminderInfo
+}
+
 export interface ChatTurnMessage {
   id: string
   role: 'user' | 'assistant'
@@ -133,6 +153,8 @@ export interface ChatTurnMessage {
   drafts?: AssistantDraft[]
   /** Cards de eventos da agenda (Google Calendar) exibidos na conversa */
   calendarCards?: CalendarCardItem[]
+  /** Cards de lembretes Web Push (FCM) exibidos na conversa */
+  reminderCards?: PushReminderCardItem[]
 }
 
 // ---------- Definições das ferramentas (OpenAI / Groq function calling schema) ----------
@@ -420,6 +442,63 @@ export const ASSISTANT_TOOLS: ToolDefinition[] = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'create_push_reminder',
+      description:
+        'Agenda um lembrete de notificação Web Push (FCM) para o usuário no fuso America/Sao_Paulo, SEM criar evento no Google Calendar.',
+      parameters: {
+        type: 'object',
+        properties: {
+          title: {
+            type: 'string',
+            description: 'Título curto do lembrete (ex.: "Tomar creatina", "Ir pro Jiu-Jitsu")',
+          },
+          body: {
+            type: 'string',
+            description: 'Descrição ou detalhe opcional da notificação',
+          },
+          dateTime: {
+            type: 'string',
+            description:
+              'Data e hora do disparo em ISO 8601 no fuso America/Sao_Paulo (ex.: "2026-11-26T18:00:00-03:00")',
+          },
+          recurrence: {
+            type: 'string',
+            enum: ['none', 'daily', 'weekly'],
+            description: 'Recorrência opcional do lembrete: "none" (padrão), "daily" ou "weekly"',
+          },
+        },
+        required: ['title', 'dateTime'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'list_push_reminders',
+      description: 'Lista todos os lembretes de notificação Web Push pendentes do usuário.',
+      parameters: {
+        type: 'object',
+        properties: {},
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'cancel_push_reminder',
+      description: 'Cancela um lembrete de notificação Web Push pendente pelo ID ou pelo título.',
+      parameters: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', description: 'ID do lembrete (ex.: "rem_...")' },
+          title: { type: 'string', description: 'Título do lembrete caso o ID não seja informado' },
+        },
+      },
+    },
+  },
 ]
 
 // ---------- Validação e gravação mediante confirmação explícita do rascunho ----------
@@ -561,6 +640,7 @@ export interface ToolExecutionOutput {
   dataLabel: string
   draft?: AssistantDraft
   calendarCards?: CalendarCardItem[]
+  reminderCards?: PushReminderCardItem[]
 }
 
 export interface ExecuteToolRuntimeOptions {
@@ -574,6 +654,12 @@ const CALENDAR_TOOL_NAMES = new Set([
   'editar_evento',
   'listar_eventos',
   'apagar_evento',
+])
+
+const REMINDER_TOOL_NAMES = new Set([
+  'create_push_reminder',
+  'list_push_reminders',
+  'cancel_push_reminder',
 ])
 
 function normalizeStr(s: string): string {
@@ -697,6 +783,59 @@ export async function executeAssistantTool(
       dataLabel: `agenda (${name})`,
       result: data,
       calendarCards: cards.length > 0 ? cards : undefined,
+    }
+  }
+
+  if (REMINDER_TOOL_NAMES.has(name)) {
+    const fetcher = runtime.fetcher ?? fetch
+    const getToken = runtime.getToken ?? defaultGetIdToken
+    const baseUrl = (runtime.workerUrl ?? ASSISTANT_WORKER_URL).replace(/\/+$/, '')
+    const token = await getToken()
+    if (!token) {
+      throw new Error('Sessão não autenticada para gerenciar lembretes push.')
+    }
+    const res = await fetcher(`${baseUrl}/chat`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        reminder_action: {
+          tool: name,
+          args: rawArgs,
+        },
+      }),
+    })
+    const data = (await res.json()) as Record<string, any>
+    if (!res.ok || data.error) {
+      return {
+        dataLabel: `lembretes push (${name})`,
+        result: { error: data.error || `Falha nos lembretes push (HTTP ${res.status})` },
+      }
+    }
+
+    const reminderCards: PushReminderCardItem[] = []
+    if ((name === 'create_push_reminder' || name === 'cancel_push_reminder') && data.reminder) {
+      reminderCards.push({
+        id: uid(),
+        action: name,
+        reminder: data.reminder as PushReminderInfo,
+      })
+    } else if (name === 'list_push_reminders' && Array.isArray(data.reminders)) {
+      for (const rem of data.reminders) {
+        reminderCards.push({
+          id: uid(),
+          action: 'list_push_reminders',
+          reminder: rem as PushReminderInfo,
+        })
+      }
+    }
+
+    return {
+      dataLabel: `lembretes push (${name})`,
+      result: data,
+      reminderCards: reminderCards.length > 0 ? reminderCards : undefined,
     }
   }
 
@@ -1267,6 +1406,7 @@ export async function sendAssistantTurn(
   const dataSentLabels: string[] = ['mensagem da conversa']
   const collectedDrafts: AssistantDraft[] = []
   const collectedCalendarCards: CalendarCardItem[] = []
+  const collectedReminderCards: PushReminderCardItem[] = []
 
   const MAX_TOOL_ROUNDS = 4
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
@@ -1317,6 +1457,7 @@ export async function sendAssistantTurn(
         dataSent: [...new Set(dataSentLabels)],
         drafts: collectedDrafts.length > 0 ? collectedDrafts : undefined,
         calendarCards: collectedCalendarCards.length > 0 ? collectedCalendarCards : undefined,
+        reminderCards: collectedReminderCards.length > 0 ? collectedReminderCards : undefined,
       }
     }
 
@@ -1348,6 +1489,9 @@ export async function sendAssistantTurn(
         if (out.calendarCards) {
           collectedCalendarCards.push(...out.calendarCards)
         }
+        if (out.reminderCards) {
+          collectedReminderCards.push(...out.reminderCards)
+        }
         apiMessages.push({
           role: 'tool',
           tool_call_id: tc.id,
@@ -1374,7 +1518,43 @@ export async function sendAssistantTurn(
     dataSent: [...new Set(dataSentLabels)],
     drafts: collectedDrafts.length > 0 ? collectedDrafts : undefined,
     calendarCards: collectedCalendarCards.length > 0 ? collectedCalendarCards : undefined,
+    reminderCards: collectedReminderCards.length > 0 ? collectedReminderCards : undefined,
   }
+}
+
+/**
+ * Cancela um lembrete Web Push a partir do botão rápido no card exibido no chat.
+ */
+export async function cancelPushReminderCard(
+  card: PushReminderCardItem,
+  options: SendAssistantOptions = {},
+): Promise<PushReminderInfo | null> {
+  const fetcher = options.fetcher ?? fetch
+  const getToken = options.getToken ?? defaultGetIdToken
+  const baseUrl = (options.workerUrl ?? ASSISTANT_WORKER_URL).replace(/\/+$/, '')
+  const token = await getToken()
+  if (!token) {
+    throw new Error('error: entre na sua conta em ~/config para cancelar o lembrete.')
+  }
+
+  const res = await fetcher(`${baseUrl}/chat`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      reminder_action: {
+        tool: 'cancel_push_reminder',
+        args: { id: card.reminder.id },
+      },
+    }),
+  })
+  const data = (await res.json()) as Record<string, any>
+  if (!res.ok || data.error) {
+    throw new Error(data.error || `Falha ao cancelar lembrete (HTTP ${res.status}).`)
+  }
+  return (data.reminder as PushReminderInfo) ?? null
 }
 
 /**

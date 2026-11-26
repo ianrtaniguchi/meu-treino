@@ -1,5 +1,7 @@
 import {
+  executePushReminderTool,
   getIfesStatusReport,
+  processDuePushReminders,
   resetIfesCachesForTest,
   runIfesCron,
   sendTestPushToUserTokens,
@@ -81,6 +83,7 @@ const ALLOWED_TOP_FIELDS = new Set([
   'max_tokens',
   'stream',
   'calendar_action',
+  'reminder_action',
 ])
 
 const ALLOWED_ROLES = new Set(['system', 'user', 'assistant', 'tool'])
@@ -418,6 +421,10 @@ interface ValidatedClientFields {
     tool: string
     args: Record<string, unknown>
   }
+  reminder_action?: {
+    tool: string
+    args: Record<string, unknown>
+  }
 }
 
 function validateClientPayload(raw: unknown): ValidatedClientFields {
@@ -450,6 +457,25 @@ function validateClientPayload(raw: unknown): ValidatedClientFields {
     return {
       max_tokens: DEFAULT_MAX_TOKENS,
       calendar_action: { tool: ca.tool.trim(), args },
+    }
+  }
+
+  // Permite execução direta de ferramenta de lembrete push (reminder_action) sem exigir messages
+  if (obj.reminder_action !== undefined) {
+    if (!obj.reminder_action || typeof obj.reminder_action !== 'object' || Array.isArray(obj.reminder_action)) {
+      throw new Error('Campo "reminder_action" inválido.')
+    }
+    const ra = obj.reminder_action as Record<string, unknown>
+    if (typeof ra.tool !== 'string' || !ra.tool.trim()) {
+      throw new Error('Campo "reminder_action.tool" inválido.')
+    }
+    const args =
+      ra.args && typeof ra.args === 'object' && !Array.isArray(ra.args)
+        ? (ra.args as Record<string, unknown>)
+        : {}
+    return {
+      max_tokens: DEFAULT_MAX_TOKENS,
+      reminder_action: { tool: ra.tool.trim(), args },
     }
   }
 
@@ -1214,6 +1240,17 @@ export async function handleRequest(
     return jsonResponse(200, calResult, origin)
   }
 
+  if (validatedFields.reminder_action) {
+    const remResult = await executePushReminderTool(
+      validatedFields.reminder_action.tool,
+      validatedFields.reminder_action.args,
+      jwtPayload.sub,
+      env,
+      { fetcher, nowMs, userIdToken },
+    )
+    return jsonResponse(200, remResult, origin)
+  }
+
   // Obtém a chave do Groq (secret opcional ou Firestore users/{uid}.groqApiKey com cache de 5 min)
   let groqApiKey: string
   try {
@@ -1283,13 +1320,27 @@ export default {
     return handleRequest(request, env)
   },
   async scheduled(
-    _event: unknown,
+    event: { scheduledTime?: number } | unknown,
     env: Env,
     ctx?: { waitUntil?: (promise: Promise<unknown>) => void },
   ): Promise<void> {
-    const task = runIfesCron(env).catch((err) => {
-      console.error('[ifes-cron] erro não tratado:', err)
-    })
+    const scheduledMs =
+      event && typeof event === 'object' && typeof (event as any).scheduledTime === 'number'
+        ? ((event as any).scheduledTime as number)
+        : Date.now()
+    const shouldRunIfes = new Date(scheduledMs).getUTCMinutes() % 20 === 0
+
+    const task = (async () => {
+      await processDuePushReminders(env, { nowMs: scheduledMs }).catch((err) => {
+        console.error('[push-reminders-cron] erro não tratado:', err)
+      })
+      if (shouldRunIfes) {
+        await runIfesCron(env, { nowMs: scheduledMs }).catch((err) => {
+          console.error('[ifes-cron] erro não tratado:', err)
+        })
+      }
+    })()
+
     if (ctx && typeof ctx.waitUntil === 'function') {
       ctx.waitUntil(task)
     } else {

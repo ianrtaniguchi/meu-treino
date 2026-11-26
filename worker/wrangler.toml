@@ -30,4 +30,4 @@ ALLOWED_ORIGINS = "https://ianrtaniguchi.github.io,http://localhost:5173"
 #   npx wrangler secret put FCM_SERVICE_ACCOUNT
 
 [triggers]
-crons = ["*/20 * * * *"]
+crons = ["*/5 * * * *"]

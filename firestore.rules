@@ -29,6 +29,23 @@ service cloud.firestore {
              (!('userAgent' in data) || (data.userAgent is string && data.userAgent.size() <= 1024));
     }
 
+    function isValidPushReminder(data) {
+      return data.keys().hasAll(['uid', 'title', 'triggerAt', 'status']) &&
+             data.keys().hasOnly(['uid', 'title', 'body', 'triggerAt', 'timezone', 'recurrence', 'status', 'createdAt', 'sentAt', 'lastSentAt', 'updatedAt', 'url']) &&
+             data.uid == request.auth.uid &&
+             data.title is string && data.title.size() > 0 && data.title.size() <= 200 &&
+             (!('body' in data) || (data.body is string && data.body.size() <= 1000)) &&
+             data.triggerAt is string && data.triggerAt.size() > 0 && data.triggerAt.size() <= 64 &&
+             (!('timezone' in data) || (data.timezone is string && data.timezone.size() <= 64)) &&
+             (!('recurrence' in data) || (data.recurrence in ['none', 'daily', 'weekly'])) &&
+             data.status in ['pending', 'sent', 'cancelled'] &&
+             (!('createdAt' in data) || (data.createdAt is string && data.createdAt.size() <= 64)) &&
+             (!('sentAt' in data) || (data.sentAt is string && data.sentAt.size() <= 64)) &&
+             (!('lastSentAt' in data) || (data.lastSentAt is string && data.lastSentAt.size() <= 64)) &&
+             (!('updatedAt' in data) || (data.updatedAt is string && data.updatedAt.size() <= 64)) &&
+             (!('url' in data) || (data.url is string && data.url.size() <= 1024));
+    }
+
     // ---------------------------------------------------------------
     // users/{uid}: documento raiz (groqApiKey editada só pelo console)
     // ---------------------------------------------------------------
@@ -66,6 +83,20 @@ service cloud.firestore {
                     resource.data.uid == request.auth.uid &&
                     request.resource.data.uid == resource.data.uid &&
                     isValidFcmToken(request.resource.data);
+      allow delete: if isOwner() && resource.data.uid == request.auth.uid;
+    }
+
+    // ---------------------------------------------------------------
+    // Lembretes agendados (Web Push): só o próprio dono
+    // ---------------------------------------------------------------
+    match /pushReminders/{reminderId} {
+      allow get: if isOwner() && (resource == null || resource.data.uid == request.auth.uid);
+      allow list: if isOwner() && resource.data.uid == request.auth.uid;
+      allow create: if isOwner() && isValidPushReminder(request.resource.data);
+      allow update: if isOwner() &&
+                    resource.data.uid == request.auth.uid &&
+                    request.resource.data.uid == resource.data.uid &&
+                    isValidPushReminder(request.resource.data);
       allow delete: if isOwner() && resource.data.uid == request.auth.uid;
     }
 

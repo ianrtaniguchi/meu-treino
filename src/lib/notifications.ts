@@ -75,6 +75,20 @@ export interface IfesWorkerStatus {
   alert: string | null
 }
 
+export interface PushReminderItem {
+  id: string
+  uid: string
+  title: string
+  body: string
+  triggerAt: string
+  timezone: string
+  recurrence: 'none' | 'daily' | 'weekly'
+  status: 'pending' | 'sent' | 'cancelled'
+  createdAt?: string
+  sentAt?: string | null
+  url?: string
+}
+
 const LS_FCM_TOKEN = 'meu_treino_fcm_token'
 const LS_FCM_DOC_ID = 'meu_treino_fcm_token_doc_id'
 const MAX_STORED_READ_IDS = 500
@@ -682,4 +696,90 @@ export function initForegroundPushListener(
     cancelled = true
     unsubMessaging?.()
   }
+}
+
+// ---------- Gerenciamento de Lembretes Push (pushReminders) na UI ----------
+
+export function formatPushReminderDateTime(iso: string): string {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return iso
+  try {
+    const parts = new Intl.DateTimeFormat('pt-BR', {
+      timeZone: 'America/Sao_Paulo',
+      day: '2-digit',
+      month: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }).formatToParts(d)
+    const get = (t: string) => parts.find((p) => p.type === t)?.value ?? ''
+    const day = get('day')
+    const month = get('month')
+    const hour = get('hour')
+    const minute = get('minute')
+    if (day && month && hour && minute) {
+      return `${day}/${month} às ${hour}:${minute}`
+    }
+  } catch {
+    // fallback abaixo
+  }
+  return d.toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })
+}
+
+export function subscribeUserPendingPushReminders(
+  uid: string,
+  onItems: (items: PushReminderItem[]) => void,
+  onError?: (err: Error) => void,
+): Unsubscribe {
+  if (!uid) {
+    onItems([])
+    return () => {}
+  }
+  try {
+    const fs = getFirebaseDb()
+    const q = query(collection(fs, 'pushReminders'), where('uid', '==', uid), limit(50))
+    return onSnapshot(
+      q,
+      (snap) => {
+        const list: PushReminderItem[] = []
+        snap.forEach((docSnap) => {
+          const d = docSnap.data()
+          if (d && d.status === 'pending' && typeof d.title === 'string' && typeof d.triggerAt === 'string') {
+            list.push({
+              id: docSnap.id,
+              uid: String(d.uid ?? uid),
+              title: d.title,
+              body: typeof d.body === 'string' ? d.body : '',
+              triggerAt: d.triggerAt,
+              timezone: typeof d.timezone === 'string' ? d.timezone : 'America/Sao_Paulo',
+              recurrence:
+                d.recurrence === 'daily' || d.recurrence === 'weekly' ? d.recurrence : 'none',
+              status: 'pending',
+              createdAt: typeof d.createdAt === 'string' ? d.createdAt : undefined,
+              sentAt: typeof d.sentAt === 'string' ? d.sentAt : null,
+              url: typeof d.url === 'string' ? d.url : undefined,
+            })
+          }
+        })
+        list.sort((a, b) => a.triggerAt.localeCompare(b.triggerAt))
+        onItems(list)
+      },
+      (err) => {
+        onError?.(err instanceof Error ? err : new Error(String(err)))
+      },
+    )
+  } catch (e) {
+    onError?.(e instanceof Error ? e : new Error(String(e)))
+    return () => {}
+  }
+}
+
+export async function cancelUserPushReminder(reminderId: string): Promise<void> {
+  const id = reminderId.trim()
+  if (!id) return
+  const fs = getFirebaseDb()
+  await updateDoc(doc(fs, 'pushReminders', id), {
+    status: 'cancelled',
+  })
 }

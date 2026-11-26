@@ -9,6 +9,7 @@ import {
   ASSISTANT_HISTORY_KEY,
   ASSISTANT_TOOLS,
   buildSystemPrompt,
+  cancelPushReminderCard,
   clearAssistantHistory,
   confirmCalendarCard,
   executeAssistantTool,
@@ -61,6 +62,9 @@ describe('Assistente de IA no App (ferramentas, rascunhos, privacidade e isolame
       'editar_evento',
       'listar_eventos',
       'apagar_evento',
+      'create_push_reminder',
+      'list_push_reminders',
+      'cancel_push_reminder',
     ])
 
     const ex = (await db.exercises.toArray())[0]
@@ -466,5 +470,88 @@ describe('Assistente de IA no App (ferramentas, rascunhos, privacidade e isolame
 
     expect(sentPayloads).toHaveLength(2)
     expect(sentPayloads[1].calendar_action.args.confirmado).toBe('confirmado')
+  })
+
+  it('integra ferramentas de lembretes push (create_push_reminder, list_push_reminders, cancel_push_reminder) e botão rápido de cancelar no card', async () => {
+    expect(SYSTEM_PROMPT).toContain('create_push_reminder')
+    expect(SYSTEM_PROMPT).toContain('list_push_reminders')
+    expect(SYSTEM_PROMPT).toContain('cancel_push_reminder')
+
+    const sentReminderPayloads: any[] = []
+    const mockReminderWorkerFetch: typeof fetch = async (_input, init) => {
+      const body = JSON.parse(String(init?.body ?? '{}'))
+      sentReminderPayloads.push(body)
+      const ra = body.reminder_action
+      if (ra?.tool === 'create_push_reminder') {
+        return new Response(
+          JSON.stringify({
+            status: 'created',
+            reminder: {
+              id: 'rem_creatina123',
+              uid: 'tH4A7sYnH1WDUdBVDd1mfltMPdj2',
+              title: ra.args.title,
+              body: ra.args.body ?? '',
+              triggerAt: '2026-11-26T21:00:00.000Z',
+              timezone: 'America/Sao_Paulo',
+              recurrence: ra.args.recurrence ?? 'none',
+              status: 'pending',
+              url: 'https://ianrtaniguchi.github.io/meu-treino/',
+            },
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        )
+      }
+      if (ra?.tool === 'cancel_push_reminder') {
+        return new Response(
+          JSON.stringify({
+            status: 'cancelled',
+            reminder: {
+              id: ra.args.id ?? 'rem_creatina123',
+              title: 'Tomar creatina',
+              triggerAt: '2026-11-26T21:00:00.000Z',
+              recurrence: 'daily',
+              status: 'cancelled',
+            },
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        )
+      }
+      throw new Error('Chamada inesperada no mock de lembretes')
+    }
+
+    const out = await executeAssistantTool(
+      'create_push_reminder',
+      {
+        title: 'Tomar creatina',
+        body: '5g com água',
+        dateTime: '2026-11-26T18:00:00-03:00',
+        recurrence: 'daily',
+      },
+      new Date('2026-11-26T10:00:00-03:00'),
+      {
+        fetcher: mockReminderWorkerFetch,
+        getToken: async () => 'token-firebase-mock',
+        workerUrl: 'https://meu-worker.workers.dev',
+      },
+    )
+
+    expect(out.reminderCards).toHaveLength(1)
+    const rCard = out.reminderCards![0]
+    expect(rCard.reminder.id).toBe('rem_creatina123')
+    expect(rCard.reminder.title).toBe('Tomar creatina')
+    expect(rCard.reminder.status).toBe('pending')
+    expect(rCard.reminder.recurrence).toBe('daily')
+
+    const cancelled = await cancelPushReminderCard(rCard, {
+      fetcher: mockReminderWorkerFetch,
+      getToken: async () => 'token-firebase-mock',
+      workerUrl: 'https://meu-worker.workers.dev',
+    })
+    expect(cancelled?.status).toBe('cancelled')
+    expect(sentReminderPayloads).toHaveLength(2)
+    expect(sentReminderPayloads[1].reminder_action).toEqual({
+      tool: 'cancel_push_reminder',
+      args: { id: 'rem_creatina123' },
+    })
   })
 })

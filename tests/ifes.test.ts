@@ -12,15 +12,21 @@ import {
 import {
   buildFcmHttpV1Message,
   buildPushNotificationsForItems,
+  cancel_push_reminder,
   computeNewsId,
+  computeNextReminderTriggerAtUtc,
+  create_push_reminder,
   IFES_VITORIA_NEWS_URL,
   isCampusVitoriaNewsUrl,
   isFcmTokenInvalidResponse,
+  list_push_reminders,
   matchesKeywords,
+  normalizeReminderTriggerAtUtc,
   parseIfesDateTimeToIso,
   parseIfesVitoriaHtml,
   parseIfesVitoriaRss,
   parseServiceAccountSecret,
+  processDuePushReminders,
   PWA_APP_ICON_URL,
   PWA_APP_NOTICIAS_URL,
   resetIfesCachesForTest,
@@ -812,6 +818,181 @@ describe('Notícias do Ifes Campus Vitória — Parser, Filtro, Deduplicação, 
     expect(rules).toContain('match /ifesNoticias/{docId}')
     expect(rules).toContain('match /fcmTokens/{tokenId}')
     expect(rules).toContain('match /meta/{docId}')
+    expect(rules).toContain('match /pushReminders/{reminderId}')
     expect(rules).toContain('allow write: if false;')
+  })
+
+  it('lembretes push no Worker: cria, lista, cancela por título/ID e processDuePushReminders dispara FCM HTTP v1 para vencidos (none vs daily/weekly)', async () => {
+    // 1. Normalização de data/hora America/Sao_Paulo (-03:00) para ISO UTC
+    expect(normalizeReminderTriggerAtUtc('2026-11-26T18:00:00-03:00')).toBe('2026-11-26T21:00:00.000Z')
+    expect(normalizeReminderTriggerAtUtc('2026-11-26T07:30')).toBe('2026-11-26T10:30:00.000Z')
+    expect(
+      computeNextReminderTriggerAtUtc(
+        '2026-11-26T21:00:00.000Z',
+        'daily',
+        Date.parse('2026-11-26T21:01:00.000Z'),
+      ),
+    ).toBe('2026-11-27T21:00:00.000Z')
+    expect(
+      computeNextReminderTriggerAtUtc(
+        '2026-11-26T21:00:00.000Z',
+        'weekly',
+        Date.parse('2026-11-26T21:01:00.000Z'),
+      ),
+    ).toBe('2026-12-03T21:00:00.000Z')
+
+    const saJson = JSON.stringify({
+      project_id: PROJECT_ID,
+      client_email: 'worker@meu-treino-2007.iam.gserviceaccount.com',
+      private_key: rsaPrivateKeyPem,
+    })
+    const env = {
+      FIREBASE_PROJECT_ID: PROJECT_ID,
+      FCM_SERVICE_ACCOUNT: saJson,
+    }
+
+    const firestoreDocs = new Map<string, Record<string, any>>()
+    const sentPushes: any[] = []
+
+    firestoreDocs.set('fcmTokens/tok-owner', {
+      fields: {
+        token: { stringValue: 'token-iphone-owner-123456' },
+        uid: { stringValue: OWNER_UID },
+        enabled: { booleanValue: true },
+        keywords: { arrayValue: { values: [] } },
+      },
+    })
+
+    const mockFetcher: typeof fetch = async (input, init) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+      const method = (init?.method ?? 'GET').toUpperCase()
+
+      if (url === 'https://oauth2.googleapis.com/token') {
+        return new Response(JSON.stringify({ access_token: 'sa-oauth-token', expires_in: 3600 }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+
+      if (url === `https://fcm.googleapis.com/v1/projects/${PROJECT_ID}/messages:send`) {
+        const body = JSON.parse(String(init?.body ?? '{}'))
+        sentPushes.push(body)
+        return new Response(JSON.stringify({ name: 'projects/meu-treino-2007/messages/rem-msg-1' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+
+      const docsPrefix = `https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(default)/documents/`
+      if (url.startsWith(docsPrefix)) {
+        const rel = url.slice(docsPrefix.length).split('?')[0]
+        if ((rel === 'pushReminders' || rel === 'fcmTokens') && method === 'GET') {
+          const docs: any[] = []
+          for (const [k, v] of firestoreDocs.entries()) {
+            if (k.startsWith(`${rel}/`)) {
+              docs.push({
+                name: `projects/${PROJECT_ID}/databases/(default)/documents/${k}`,
+                fields: v.fields,
+              })
+            }
+          }
+          return new Response(JSON.stringify({ documents: docs }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        if (method === 'PATCH') {
+          const body = JSON.parse(String(init?.body ?? '{}'))
+          firestoreDocs.set(rel, { fields: body.fields })
+          return new Response(
+            JSON.stringify({
+              name: `projects/${PROJECT_ID}/databases/(default)/documents/${rel}`,
+              fields: body.fields,
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          )
+        }
+      }
+      throw new Error(`URL não esperada no mock de lembretes: ${method} ${url}`)
+    }
+
+    const baseNowMs = Date.parse('2026-11-26T20:00:00.000Z') // 17:00 em America/Sao_Paulo
+
+    // 2. Cria 3 lembretes: 1 único às 18:00 (-03:00), 1 diário às 18:00 (-03:00) e 1 futuro às 22:00 (-03:00)
+    const c1 = (await create_push_reminder(
+      {
+        title: 'Ir pro Jiu-Jitsu',
+        body: 'Levar kimono',
+        dateTime: '2026-11-26T18:00:00-03:00',
+        recurrence: 'none',
+      },
+      OWNER_UID,
+      env,
+      { fetcher: mockFetcher, nowMs: baseNowMs },
+    )) as any
+    expect(c1.status).toBe('created')
+    expect(c1.reminder.triggerAt).toBe('2026-11-26T21:00:00.000Z')
+
+    const c2 = (await create_push_reminder(
+      {
+        title: 'Tomar creatina',
+        body: '5g',
+        dateTime: '2026-11-26T18:00:00-03:00',
+        recurrence: 'daily',
+      },
+      OWNER_UID,
+      env,
+      { fetcher: mockFetcher, nowMs: baseNowMs },
+    )) as any
+    expect(c2.status).toBe('created')
+
+    const c3 = (await create_push_reminder(
+      {
+        title: 'Estudar Cálculo I',
+        dateTime: '2026-11-26T22:00:00-03:00',
+        recurrence: 'none',
+      },
+      OWNER_UID,
+      env,
+      { fetcher: mockFetcher, nowMs: baseNowMs },
+    )) as any
+    expect(c3.status).toBe('created')
+
+    // 3. Lista lembretes pendentes (3 itens)
+    const listed1 = (await list_push_reminders({}, OWNER_UID, env, {
+      fetcher: mockFetcher,
+      nowMs: baseNowMs,
+    })) as any
+    expect(listed1.reminders).toHaveLength(3)
+
+    // 4. Cancela "Estudar Cálculo I" pelo título (sem acento/case-insensitive)
+    const cancelled = (await cancel_push_reminder(
+      { title: 'estudar calculo i' },
+      OWNER_UID,
+      env,
+      { fetcher: mockFetcher, nowMs: baseNowMs },
+    )) as any
+    expect(cancelled.status).toBe('cancelled')
+    expect(cancelled.reminder.status).toBe('cancelled')
+
+    // 5. Executa processDuePushReminders às 18:05 (-03:00, ou seja, 2026-11-26T21:05:00.000Z):
+    // Dispara push para "Ir pro Jiu-Jitsu" (marca status = "sent") e "Tomar creatina" (reagenda +1 dia para 2026-11-27T21:00:00.000Z)
+    const cronNowMs = Date.parse('2026-11-26T21:05:00.000Z')
+    const report = await processDuePushReminders(env, { fetcher: mockFetcher, nowMs: cronNowMs })
+    expect(report.dueCount).toBe(2)
+    expect(report.pushesSent).toBe(2)
+    expect(report.completedCount).toBe(1)
+    expect(report.rescheduledCount).toBe(1)
+    expect(sentPushes).toHaveLength(2)
+    expect(sentPushes[0].message.webpush.headers).toEqual({ TTL: '86400', Urgency: 'high' })
+
+    // Após o disparo, só o lembrete diário reagendado continua como "pending"
+    const listedAfter = (await list_push_reminders({}, OWNER_UID, env, {
+      fetcher: mockFetcher,
+      nowMs: cronNowMs,
+    })) as any
+    expect(listedAfter.reminders).toHaveLength(1)
+    expect(listedAfter.reminders[0].title).toBe('Tomar creatina')
+    expect(listedAfter.reminders[0].triggerAt).toBe('2026-11-27T21:00:00.000Z')
   })
 })

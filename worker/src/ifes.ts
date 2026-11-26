@@ -1,10 +1,29 @@
 export const IFES_VITORIA_NEWS_URL = 'https://vitoria.ifes.edu.br/noticias'
 export const IFES_VITORIA_RSS_URL = 'https://vitoria.ifes.edu.br/noticias?format=feed&type=rss'
 export const IFES_VITORIA_ORIGIN = 'https://vitoria.ifes.edu.br'
+export const PWA_APP_BASE_URL = 'https://ianrtaniguchi.github.io/meu-treino/'
 export const PWA_APP_NOTICIAS_URL = 'https://ianrtaniguchi.github.io/meu-treino/?tab=noticias'
 export const PWA_APP_ICON_URL = 'https://ianrtaniguchi.github.io/meu-treino/icon-192.png'
 export const MAX_PUSHES_PER_RUN = 5
 export const MAX_PUSH_BODY_CHARS = 120
+
+export type PushReminderRecurrence = 'none' | 'daily' | 'weekly'
+export type PushReminderStatus = 'pending' | 'sent' | 'cancelled'
+
+export interface PushReminderDoc {
+  id: string
+  uid: string
+  title: string
+  body: string
+  triggerAt: string
+  timezone: string
+  recurrence: PushReminderRecurrence
+  status: PushReminderStatus
+  createdAt: string
+  sentAt: string | null
+  lastSentAt?: string | null
+  url: string
+}
 
 export interface IfesNewsItem {
   id: string
@@ -310,7 +329,7 @@ export interface PushNotificationPayload {
   title: string
   body: string
   url: string
-  route: 'noticias'
+  route: 'noticias' | 'assistente' | 'treino' | 'dieta' | 'corpo' | 'config'
   newsId: string
   groupedCount?: number
 }
@@ -1036,5 +1055,445 @@ export async function sendTestPushToUserTokens(
     sent,
     failed,
     results,
+  }
+}
+
+// ---------- Lembretes Push (pushReminders): normalização de datas, CRUD e disparo no Cron ----------
+
+const VALID_RECURRENCES = new Set<PushReminderRecurrence>(['none', 'daily', 'weekly'])
+
+export function normalizeReminderRecurrence(raw?: unknown): PushReminderRecurrence {
+  const s = typeof raw === 'string' ? (raw.trim().toLowerCase() as PushReminderRecurrence) : 'none'
+  return VALID_RECURRENCES.has(s) ? s : 'none'
+}
+
+/**
+ * Converte data/hora (ISO 8601 com ou sem offset, ou "AAAA-MM-DD HH:MM") interpretada em
+ * America/Sao_Paulo (UTC-3) para string ISO 8601 em UTC (ex.: "2026-11-26T21:00:00.000Z").
+ */
+export function normalizeReminderTriggerAtUtc(rawDateTime: string): string {
+  const s = String(rawDateTime ?? '').trim()
+  if (!s) {
+    throw new Error('Data/hora do lembrete ausente.')
+  }
+  let normalized = s.replace(/^(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2})/, '$1T$2')
+  if (/^\d{4}-\d{2}-\d{2}$/.test(normalized)) {
+    normalized = `${normalized}T09:00:00-03:00`
+  } else if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(normalized)) {
+    normalized = `${normalized}:00-03:00`
+  } else if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?$/.test(normalized)) {
+    normalized = `${normalized}-03:00`
+  }
+  const d = new Date(normalized)
+  if (Number.isNaN(d.getTime())) {
+    throw new Error(`Data/hora inválida para o lembrete: "${rawDateTime}"`)
+  }
+  return d.toISOString()
+}
+
+/**
+ * Avança o `triggerAt` de um lembrete recorrente ("daily" = +1 dia, "weekly" = +7 dias),
+ * mantendo o mesmo horário em America/Sao_Paulo (UTC-3 fixo) e garantindo que o próximo
+ * disparo fique no futuro em relação a `nowMs`.
+ */
+export function computeNextReminderTriggerAtUtc(
+  currentTriggerAtIso: string,
+  recurrence: PushReminderRecurrence,
+  nowMs = Date.now(),
+): string {
+  const baseMs = Date.parse(currentTriggerAtIso)
+  if (Number.isNaN(baseMs)) {
+    throw new Error(`triggerAt inválido: "${currentTriggerAtIso}"`)
+  }
+  const stepMs =
+    recurrence === 'weekly'
+      ? 7 * 24 * 60 * 60 * 1000
+      : 24 * 60 * 60 * 1000
+  let nextMs = baseMs + stepMs
+  while (nextMs <= nowMs) {
+    nextMs += stepMs
+  }
+  return new Date(nextMs).toISOString()
+}
+
+function generateReminderId(nowMs = Date.now()): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return `rem_${crypto.randomUUID().replace(/-/g, '').slice(0, 20)}`
+  }
+  return `rem_${nowMs.toString(36)}${Math.random().toString(36).slice(2, 10)}`
+}
+
+function mapRawToPushReminderDoc(docId: string, d: Record<string, any>): PushReminderDoc {
+  return {
+    id: docId,
+    uid: String(d.uid ?? ''),
+    title: String(d.title ?? '(sem título)'),
+    body: typeof d.body === 'string' ? d.body : '',
+    triggerAt: String(d.triggerAt ?? ''),
+    timezone: typeof d.timezone === 'string' && d.timezone ? d.timezone : 'America/Sao_Paulo',
+    recurrence: normalizeReminderRecurrence(d.recurrence),
+    status:
+      d.status === 'sent' || d.status === 'cancelled' || d.status === 'pending'
+        ? d.status
+        : 'pending',
+    createdAt: typeof d.createdAt === 'string' ? d.createdAt : '',
+    sentAt: typeof d.sentAt === 'string' ? d.sentAt : null,
+    lastSentAt: typeof d.lastSentAt === 'string' ? d.lastSentAt : null,
+    url: typeof d.url === 'string' && /^https:\/\//i.test(d.url) ? d.url : PWA_APP_BASE_URL,
+  }
+}
+
+async function resolveFirestoreAuthBearer(
+  env: { FCM_SERVICE_ACCOUNT?: string; FIREBASE_PROJECT_ID?: string },
+  userIdToken: string | undefined,
+  fetcher: typeof fetch,
+  nowMs: number,
+): Promise<{ projectId: string; bearerToken: string }> {
+  const projectId = (env.FIREBASE_PROJECT_ID ?? 'meu-treino-2007').trim() || 'meu-treino-2007'
+  if (userIdToken && userIdToken.trim()) {
+    return { projectId, bearerToken: userIdToken.trim() }
+  }
+  const sa = parseServiceAccountSecret(env.FCM_SERVICE_ACCOUNT, projectId)
+  const accessToken = await getServiceAccountAccessToken(sa, fetcher, nowMs)
+  return { projectId, bearerToken: accessToken }
+}
+
+async function listPushRemindersFromFirestore(
+  projectId: string,
+  bearerToken: string,
+  fetcher: typeof fetch,
+): Promise<PushReminderDoc[]> {
+  const url = `${firestoreBaseUrl(projectId)}/pushReminders?pageSize=200`
+  const res = await fetcher(url, {
+    headers: { Authorization: `Bearer ${bearerToken}` },
+  })
+  if (!res.ok) return []
+  const data = (await res.json()) as { documents?: any[] }
+  const out: PushReminderDoc[] = []
+  for (const raw of data.documents ?? []) {
+    const parts = String(raw.name ?? '').split('/')
+    const docId = parts[parts.length - 1]
+    const d = decodeFirestoreDoc(raw)
+    if (docId && d.uid && d.title && d.triggerAt) {
+      out.push(mapRawToPushReminderDoc(docId, d))
+    }
+  }
+  return out
+}
+
+async function writePushReminderToFirestore(
+  projectId: string,
+  bearerToken: string,
+  reminder: PushReminderDoc,
+  fetcher: typeof fetch,
+): Promise<void> {
+  const url = `${firestoreBaseUrl(projectId)}/pushReminders/${encodeURIComponent(reminder.id)}`
+  const res = await fetcher(url, {
+    method: 'PATCH',
+    headers: {
+      Authorization: `Bearer ${bearerToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(
+      encodeFirestoreFields({
+        uid: reminder.uid,
+        title: reminder.title,
+        body: reminder.body,
+        triggerAt: reminder.triggerAt,
+        timezone: reminder.timezone,
+        recurrence: reminder.recurrence,
+        status: reminder.status,
+        createdAt: reminder.createdAt,
+        sentAt: reminder.sentAt,
+        lastSentAt: reminder.lastSentAt ?? null,
+        url: reminder.url,
+      }),
+    ),
+  })
+  if (!res.ok) {
+    throw new Error(`Erro ao salvar lembrete no Firestore (HTTP ${res.status}).`)
+  }
+}
+
+export async function create_push_reminder(
+  params: {
+    title?: string
+    titulo?: string
+    body?: string
+    descricao?: string
+    dateTime?: string
+    triggerAt?: string
+    inicio?: string
+    recurrence?: string
+    timezone?: string
+    url?: string
+  },
+  uid: string,
+  env: { FCM_SERVICE_ACCOUNT?: string; FIREBASE_PROJECT_ID?: string },
+  deps: { fetcher?: typeof fetch; nowMs?: number; userIdToken?: string } = {},
+): Promise<Record<string, unknown>> {
+  const fetcher = deps.fetcher ?? fetch
+  const nowMs = deps.nowMs ?? Date.now()
+  const title = String(params.title ?? params.titulo ?? '').trim()
+  const rawDt = String(params.dateTime ?? params.triggerAt ?? params.inicio ?? '').trim()
+  if (!title || !rawDt) {
+    throw new Error('Título (title) e data/hora (dateTime) são obrigatórios para create_push_reminder.')
+  }
+
+  const triggerAt = normalizeReminderTriggerAtUtc(rawDt)
+  const recurrence = normalizeReminderRecurrence(params.recurrence)
+  const body = String(params.body ?? params.descricao ?? '').trim()
+  const timezone =
+    typeof params.timezone === 'string' && params.timezone.trim()
+      ? params.timezone.trim()
+      : 'America/Sao_Paulo'
+  const url =
+    typeof params.url === 'string' && /^https:\/\//i.test(params.url.trim())
+      ? params.url.trim()
+      : PWA_APP_BASE_URL
+
+  const { projectId, bearerToken } = await resolveFirestoreAuthBearer(
+    env,
+    deps.userIdToken,
+    fetcher,
+    nowMs,
+  )
+
+  const reminder: PushReminderDoc = {
+    id: generateReminderId(nowMs),
+    uid,
+    title: title.slice(0, 200),
+    body: body.slice(0, 1000),
+    triggerAt,
+    timezone,
+    recurrence,
+    status: 'pending',
+    createdAt: new Date(nowMs).toISOString(),
+    sentAt: null,
+    lastSentAt: null,
+    url,
+  }
+
+  await writePushReminderToFirestore(projectId, bearerToken, reminder, fetcher)
+
+  return {
+    status: 'created',
+    reminder,
+  }
+}
+
+export async function list_push_reminders(
+  _params: Record<string, unknown>,
+  uid: string,
+  env: { FCM_SERVICE_ACCOUNT?: string; FIREBASE_PROJECT_ID?: string },
+  deps: { fetcher?: typeof fetch; nowMs?: number; userIdToken?: string } = {},
+): Promise<Record<string, unknown>> {
+  const fetcher = deps.fetcher ?? fetch
+  const nowMs = deps.nowMs ?? Date.now()
+  const { projectId, bearerToken } = await resolveFirestoreAuthBearer(
+    env,
+    deps.userIdToken,
+    fetcher,
+    nowMs,
+  )
+
+  const all = await listPushRemindersFromFirestore(projectId, bearerToken, fetcher)
+  const pending = all
+    .filter((r) => r.uid === uid && r.status === 'pending')
+    .sort((a, b) => a.triggerAt.localeCompare(b.triggerAt))
+
+  return {
+    status: 'listed',
+    reminders: pending,
+  }
+}
+
+export async function cancel_push_reminder(
+  params: { id?: string; title?: string; titulo?: string },
+  uid: string,
+  env: { FCM_SERVICE_ACCOUNT?: string; FIREBASE_PROJECT_ID?: string },
+  deps: { fetcher?: typeof fetch; nowMs?: number; userIdToken?: string } = {},
+): Promise<Record<string, unknown>> {
+  const fetcher = deps.fetcher ?? fetch
+  const nowMs = deps.nowMs ?? Date.now()
+  const targetId = String(params.id ?? '').trim()
+  const targetTitle = String(params.title ?? params.titulo ?? '').trim()
+  if (!targetId && !targetTitle) {
+    throw new Error('Informe o "id" ou o "title" do lembrete para cancel_push_reminder.')
+  }
+
+  const { projectId, bearerToken } = await resolveFirestoreAuthBearer(
+    env,
+    deps.userIdToken,
+    fetcher,
+    nowMs,
+  )
+
+  const all = await listPushRemindersFromFirestore(projectId, bearerToken, fetcher)
+  const userPending = all.filter((r) => r.uid === uid && r.status === 'pending')
+
+  let found: PushReminderDoc | undefined
+  if (targetId) {
+    found = userPending.find((r) => r.id === targetId) ?? all.find((r) => r.uid === uid && r.id === targetId)
+  }
+  if (!found && targetTitle) {
+    const q = normalizeForMatch(targetTitle)
+    found =
+      userPending.find((r) => normalizeForMatch(r.title) === q) ??
+      userPending.find((r) => normalizeForMatch(r.title).includes(q))
+  }
+
+  if (!found) {
+    throw new Error(
+      targetId
+        ? `Lembrete "${targetId}" não encontrado.`
+        : `Nenhum lembrete pendente encontrado com o título "${targetTitle}".`,
+    )
+  }
+
+  const cancelled: PushReminderDoc = {
+    ...found,
+    status: 'cancelled',
+  }
+  await writePushReminderToFirestore(projectId, bearerToken, cancelled, fetcher)
+
+  return {
+    status: 'cancelled',
+    reminder: cancelled,
+  }
+}
+
+export async function executePushReminderTool(
+  toolName: string,
+  args: Record<string, unknown>,
+  uid: string,
+  env: { FCM_SERVICE_ACCOUNT?: string; FIREBASE_PROJECT_ID?: string },
+  deps: { fetcher?: typeof fetch; nowMs?: number; userIdToken?: string } = {},
+): Promise<Record<string, unknown>> {
+  try {
+    if (toolName === 'create_push_reminder') {
+      return await create_push_reminder(args as any, uid, env, deps)
+    }
+    if (toolName === 'list_push_reminders') {
+      return await list_push_reminders(args, uid, env, deps)
+    }
+    if (toolName === 'cancel_push_reminder') {
+      return await cancel_push_reminder(args as any, uid, env, deps)
+    }
+    return { error: `Ferramenta de lembrete desconhecida: ${toolName}` }
+  } catch (e) {
+    return { error: (e as Error).message || 'Erro ao processar lembrete push.' }
+  }
+}
+
+export interface ProcessRemindersReport {
+  checkedCount: number
+  dueCount: number
+  pushesSent: number
+  completedCount: number
+  rescheduledCount: number
+}
+
+/**
+ * Executado pelo Cron do Worker: busca todos os lembretes `pending` com `triggerAt <= now`,
+ * dispara o Web Push via FCM HTTP v1 para os tokens ativos do respectivo `uid`, e atualiza
+ * `status = "sent"` (ou avança `triggerAt` se `recurrence` for `"daily"` ou `"weekly"`).
+ */
+export async function processDuePushReminders(
+  env: { FCM_SERVICE_ACCOUNT?: string; FIREBASE_PROJECT_ID?: string },
+  deps: { fetcher?: typeof fetch; nowMs?: number } = {},
+): Promise<ProcessRemindersReport> {
+  const fetcher = deps.fetcher ?? fetch
+  const nowMs = deps.nowMs ?? Date.now()
+  const nowIso = new Date(nowMs).toISOString()
+
+  const projectId = (env.FIREBASE_PROJECT_ID ?? 'meu-treino-2007').trim() || 'meu-treino-2007'
+  const sa = parseServiceAccountSecret(env.FCM_SERVICE_ACCOUNT, projectId)
+  const accessToken = await getServiceAccountAccessToken(sa, fetcher, nowMs)
+
+  const allReminders = await listPushRemindersFromFirestore(projectId, accessToken, fetcher)
+  const pendingReminders = allReminders.filter((r) => r.status === 'pending')
+  const dueReminders = pendingReminders.filter((r) => {
+    const ts = Date.parse(r.triggerAt)
+    return Number.isFinite(ts) && ts <= nowMs
+  })
+
+  if (dueReminders.length === 0) {
+    return {
+      checkedCount: pendingReminders.length,
+      dueCount: 0,
+      pushesSent: 0,
+      completedCount: 0,
+      rescheduledCount: 0,
+    }
+  }
+
+  const allTokens = (await listFcmTokens(projectId, accessToken, fetcher)).filter((t) => t.enabled)
+
+  let pushesSent = 0
+  let completedCount = 0
+  let rescheduledCount = 0
+
+  for (const reminder of dueReminders) {
+    const userTokens = allTokens.filter((t) => t.uid === reminder.uid)
+    const notifPayload: PushNotificationPayload = {
+      title: `Lembrete: ${reminder.title}`,
+      body: reminder.body || reminder.title,
+      url: reminder.url || PWA_APP_BASE_URL,
+      route: 'assistente',
+      newsId: reminder.id,
+    }
+
+    for (const tokenDoc of userTokens) {
+      const sendRes = await sendFcmNotificationToToken(
+        projectId,
+        accessToken,
+        tokenDoc,
+        notifPayload,
+        fetcher,
+      )
+      if (sendRes.ok) pushesSent++
+    }
+
+    if (reminder.recurrence === 'daily' || reminder.recurrence === 'weekly') {
+      const nextTriggerAt = computeNextReminderTriggerAtUtc(
+        reminder.triggerAt,
+        reminder.recurrence,
+        nowMs,
+      )
+      await writePushReminderToFirestore(
+        projectId,
+        accessToken,
+        {
+          ...reminder,
+          triggerAt: nextTriggerAt,
+          sentAt: nowIso,
+          lastSentAt: nowIso,
+          status: 'pending',
+        },
+        fetcher,
+      )
+      rescheduledCount++
+    } else {
+      await writePushReminderToFirestore(
+        projectId,
+        accessToken,
+        {
+          ...reminder,
+          status: 'sent',
+          sentAt: nowIso,
+        },
+        fetcher,
+      )
+      completedCount++
+    }
+  }
+
+  return {
+    checkedCount: pendingReminders.length,
+    dueCount: dueReminders.length,
+    pushesSent,
+    completedCount,
+    rescheduledCount,
   }
 }

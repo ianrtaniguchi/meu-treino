@@ -22,9 +22,11 @@ import {
   setLockTimeoutMinutes,
 } from '../lib/lock'
 import {
+  cancelUserPushReminder,
   enablePushNotifications,
   fetchIfesWorkerStatus,
   formatKeywordsInput,
+  formatPushReminderDateTime,
   getActiveVapidKeyPreview,
   getNotificationDiagnosticsLocal,
   getNotificationPermissionLabel,
@@ -34,10 +36,12 @@ import {
   loadUserFcmTokenDoc,
   parseKeywordsInput,
   recordLastNotificationError,
+  subscribeUserPendingPushReminders,
   triggerPushTest,
   updateUserFcmSettings,
   type FcmTokenDoc,
   type IfesWorkerStatus,
+  type PushReminderItem,
 } from '../lib/notifications'
 
 const fmtDateTime = (t: number | string) => new Date(t).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })
@@ -99,6 +103,27 @@ export default function Config() {
   const [standalonePwa, setStandalonePwa] = useState(() => isStandalonePwa())
   const [iosNotInstalled, setIosNotInstalled] = useState(() => isIosSafariNotInstalled())
   const [workerIfesStatus, setWorkerIfesStatus] = useState<IfesWorkerStatus | null>(null)
+  const [pendingReminders, setPendingReminders] = useState<PushReminderItem[]>([])
+
+  useEffect(() => {
+    if (!syncStatus.user?.uid) {
+      setPendingReminders([])
+      return
+    }
+    const unsub = subscribeUserPendingPushReminders(syncStatus.user.uid, (items) => {
+      setPendingReminders(items)
+    })
+    return () => unsub()
+  }, [syncStatus.user?.uid])
+
+  const handleCancelPushReminder = async (rem: PushReminderItem) => {
+    try {
+      await cancelUserPushReminder(rem.id)
+      toast(`Lembrete "${rem.title}" cancelado`)
+    } catch (e) {
+      toast((e as Error)?.message || 'Falha ao cancelar lembrete')
+    }
+  }
 
   useEffect(() => {
     setPermissionLabel(getNotificationPermissionLabel())
@@ -675,6 +700,45 @@ export default function Config() {
             >
               $ consultar status do coletor (/ifes/status)
             </button>
+          )}
+        </div>
+
+        <div className="stack" style={{ borderTop: '1px solid var(--border)', paddingTop: 8, marginTop: 4 }}>
+          <div className="row between">
+            <span className="muted small"><b>lembretes push agendados</b></span>
+            <span className="chip">{pendingReminders.length} pendente(s)</span>
+          </div>
+          {!syncStatus.user ? (
+            <div className="muted small">Faça login para ver seus lembretes push agendados.</div>
+          ) : pendingReminders.length === 0 ? (
+            <div className="muted small">
+              Nenhum lembrete push pendente. Peça em <b>~/assistente</b> (ex.: "me lembra às 18h de tomar creatina").
+            </div>
+          ) : (
+            pendingReminders.map((rem) => (
+              <div key={rem.id} className="item">
+                <div className="grow">
+                  <div>
+                    <b>{rem.title}</b>{' '}
+                    {rem.recurrence !== 'none' && (
+                      <span className="chip">
+                        {rem.recurrence === 'daily' ? 'diário' : 'semanal'}
+                      </span>
+                    )}
+                  </div>
+                  <div className="muted small">
+                    {formatPushReminderDateTime(rem.triggerAt)}
+                    {rem.body ? ` · ${rem.body}` : ''}
+                  </div>
+                </div>
+                <button
+                  className="small danger"
+                  onClick={() => void handleCancelPushReminder(rem)}
+                >
+                  $ cancelar
+                </button>
+              </div>
+            ))
           )}
         </div>
       </div>

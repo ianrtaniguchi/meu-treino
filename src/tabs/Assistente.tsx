@@ -6,6 +6,7 @@ import { dayTotals } from '../data/stats'
 import { useSyncStatus } from '../hooks'
 import {
   applyConfirmedDraft,
+  cancelPushReminderCard,
   clearAssistantHistory,
   confirmCalendarCard,
   loadAssistantHistory,
@@ -14,6 +15,7 @@ import {
   type AssistantDraft,
   type CalendarCardItem,
   type ChatTurnMessage,
+  type PushReminderCardItem,
 } from '../lib/assistant'
 
 const MEAL_LABELS: Record<string, string> = {
@@ -153,6 +155,30 @@ export default function Assistente() {
     }
   }
 
+  const handleCancelReminderCard = async (msgId: string, card: PushReminderCardItem) => {
+    try {
+      const updatedRem = await cancelPushReminderCard(card)
+      const updated = history.map((m) => {
+        if (m.id !== msgId || !m.reminderCards) return m
+        return {
+          ...m,
+          reminderCards: m.reminderCards.map((c) =>
+            c.id === card.id
+              ? {
+                  ...c,
+                  reminder: updatedRem ?? { ...c.reminder, status: 'cancelled' as const },
+                }
+              : c,
+          ),
+        }
+      })
+      await saveAssistantHistory(updated)
+      toast('Lembrete push cancelado')
+    } catch (e) {
+      toast((e as Error).message || 'Falha ao cancelar lembrete')
+    }
+  }
+
   return (
     <>
       <div className="row between" style={{ alignItems: 'baseline' }}>
@@ -245,6 +271,15 @@ export default function Assistente() {
                     key={c.id}
                     card={c}
                     onConfirm={() => void handleConfirmCalendarCard(m.id, c)}
+                  />
+                ))}
+
+              {m.reminderCards &&
+                m.reminderCards.map((rc) => (
+                  <PushReminderCard
+                    key={rc.id}
+                    card={rc}
+                    onCancel={() => void handleCancelReminderCard(m.id, rc)}
                   />
                 ))}
 
@@ -473,6 +508,81 @@ function CalendarEventCard({
       {isPending && (
         <button className="primary small block" onClick={onConfirm}>
           Confirmar
+        </button>
+      )}
+    </div>
+  )
+}
+
+const RECURRENCE_LABELS: Record<string, string> = {
+  none: 'único',
+  daily: 'diário',
+  weekly: 'semanal',
+}
+
+function fmtReminderTriggerAt(iso: string): string {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return iso
+  try {
+    const parts = new Intl.DateTimeFormat('pt-BR', {
+      timeZone: 'America/Sao_Paulo',
+      day: '2-digit',
+      month: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }).formatToParts(d)
+    const get = (t: string) => parts.find((p) => p.type === t)?.value ?? ''
+    const day = get('day')
+    const month = get('month')
+    const hour = get('hour')
+    const minute = get('minute')
+    if (day && month && hour && minute) {
+      return `${day}/${month} às ${hour}:${minute}`
+    }
+  } catch {
+    // fallback abaixo
+  }
+  return `${d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })} às ${d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}`
+}
+
+function PushReminderCard({
+  card,
+  onCancel,
+}: {
+  card: PushReminderCardItem
+  onCancel: () => void
+}) {
+  const { reminder } = card
+  const isPending = reminder.status === 'pending'
+  const isCancelled = reminder.status === 'cancelled'
+
+  return (
+    <div
+      className="card stack small"
+      style={{
+        background: 'var(--bg)',
+        borderColor: isCancelled ? 'var(--border)' : 'var(--green)',
+      }}
+    >
+      <div className="row between">
+        <b className={isCancelled ? 'muted' : 'green'}>[push] {reminder.title}</b>
+        <span className="chip">
+          {isCancelled
+            ? 'cancelado'
+            : reminder.status === 'sent'
+              ? 'enviado'
+              : `agendado · ${RECURRENCE_LABELS[reminder.recurrence] ?? 'único'}`}
+        </span>
+      </div>
+      <div>
+        disparo: <b>{fmtReminderTriggerAt(reminder.triggerAt)}</b>
+      </div>
+      {reminder.body && <div className="muted">{reminder.body}</div>}
+      {isPending && (
+        <button className="small danger" onClick={onCancel}>
+          $ cancelar lembrete
         </button>
       )}
     </div>
