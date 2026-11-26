@@ -19,6 +19,7 @@ import Dieta from './tabs/Dieta'
 import Corpo from './tabs/Corpo'
 import Assistente from './tabs/Assistente'
 import Noticias from './tabs/Noticias'
+import Onibus from './tabs/Onibus'
 import Config from './tabs/Config'
 import Icon from './components/Icons'
 import FirstLoginPrompt from './components/FirstLoginPrompt'
@@ -33,14 +34,15 @@ import {
   type IfesNoticia,
 } from './lib/notifications'
 
-type Tab = 'treino' | 'dieta' | 'corpo' | 'assistente' | 'noticias' | 'config'
-const TABS: Tab[] = ['treino', 'dieta', 'corpo', 'assistente', 'noticias', 'config']
+type Tab = 'treino' | 'dieta' | 'corpo' | 'assistente' | 'noticias' | 'onibus' | 'config'
+const TABS: Tab[] = ['treino', 'dieta', 'corpo', 'assistente', 'noticias', 'onibus', 'config']
 const TAB_LABELS: Record<Tab, string> = {
   treino: 'Treino (~/treino)',
   dieta: 'Dieta (~/dieta)',
   corpo: 'Corpo (~/corpo)',
   assistente: 'Assistente IA (~/assistente)',
   noticias: 'Notícias do Ifes (~/noticias)',
+  onibus: 'Ônibus Transcol / Ceturb-ES (~/onibus)',
   config: 'Configurações (~/config)',
 }
 const WEEK = 7 * 24 * 3600 * 1000
@@ -313,6 +315,7 @@ export default function App() {
             onManualRefresh={refreshNoticiasManual}
           />
         )}
+        {tab === 'onibus' && <Onibus />}
         {tab === 'config' && <Config />}
       </main>
       <nav

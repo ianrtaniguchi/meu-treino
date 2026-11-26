@@ -747,6 +747,70 @@ label.field > input, label.field > select, label.field > textarea { margin-top: 
 }
 .boot-line { color: var(--green); margin-top: 4px; }
 
+/* Seção Ônibus (Transcol / Ceturb-ES) */
+.bus-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  padding: 3px 9px;
+  border-radius: var(--radius-sm);
+  background: var(--btn-on-bg);
+  border: 1px solid var(--green);
+  color: var(--green);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.25;
+}
+.bus-next-card {
+  border-color: var(--green);
+  box-shadow: var(--glow);
+}
+.bus-note-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--amber);
+  color: var(--amber);
+  font-size: 11px;
+  font-weight: 700;
+}
+.bus-time-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(64px, 1fr));
+  gap: 7px;
+}
+.bus-time-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-height: 36px;
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg);
+  font-size: 13px;
+  font-weight: 600;
+}
+.bus-time-pill.next {
+  border-color: var(--green);
+  background: var(--btn-on-bg);
+  color: var(--green);
+  box-shadow: var(--glow);
+  font-weight: 700;
+}
+.bus-time-pill.past {
+  opacity: 0.46;
+}
+.bus-time-sup {
+  color: var(--amber);
+  font-size: 10px;
+  font-weight: 700;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; animation: none !important; scroll-behavior: auto !important; }
   button:active, .tabbar button:active, .tabs button:active { transform: none; }

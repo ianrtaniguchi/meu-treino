@@ -6,6 +6,7 @@ import {
   runIfesCron,
   sendTestPushToUserTokens,
 } from './ifes'
+import { handleCeturbProxyRequest, resetCeturbCachesForTest } from './ceturb'
 
 export interface RateLimiterBinding {
   limit(options: { key: string }): Promise<{ success: boolean }>
@@ -114,6 +115,7 @@ export function resetWorkerCachesForTest() {
   memoryRateBuckets.clear()
   googleAccessTokenCache = null
   resetIfesCachesForTest()
+  resetCeturbCachesForTest()
 }
 
 // ---------- Validação e busca da chave do Groq no Firestore (REST) ----------
@@ -1207,6 +1209,11 @@ export async function handleRequest(
   // Bloqueia origens não autorizadas em qualquer requisição
   if (!originAllowed || !origin) {
     return jsonResponse(403, { error: 'error: origem não permitida pelo CORS.' })
+  }
+
+  // Rotas públicas de proxy com cache da Ceturb-ES (/ceturb/lines, /ceturb/schedules, /ceturb/itinerary, /ceturb/integrations, /ceturb/fares)
+  if (url.pathname.startsWith('/ceturb/')) {
+    return handleCeturbProxyRequest(url, request, buildCorsHeaders(origin), { fetcher, nowMs })
   }
 
   const isAnalyzeMeal = url.pathname === '/analyze-meal'
