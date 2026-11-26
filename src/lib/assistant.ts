@@ -2,7 +2,7 @@ import { ASSISTANT_WORKER_URL } from '../assistantConfig'
 import { db, getRawRecord, getSetting, runApplyingRemote, uid } from '../data/db'
 import { DEFAULT_GOALS } from '../data/seed'
 import { addDays, dayTotals, exerciseHistory, movingAverage, parseDate, personalRecord, setLabel, today, totalVolume } from '../data/stats'
-import { getFirebaseAuth } from '../data/sync'
+import { getFirebaseAuth, getSyncStatus } from '../data/sync'
 import type { BodyEntry, Exercise, Goals, Meal, MealItem, MealType, Routine, Session } from '../data/types'
 import { buildDays, prSetIds, streaks } from './panel'
 
@@ -1261,20 +1261,38 @@ export async function executeAssistantTool(
   throw new Error(`Ferramenta desconhecida: ${name}`)
 }
 
-// ---------- Persistência local-only do histórico da conversa ----------
+// ---------- Persistência local-only do histórico da conversa (isolada por UID quando logado) ----------
 
-export async function loadAssistantHistory(): Promise<ChatTurnMessage[]> {
-  const row = await getRawRecord('settings', ASSISTANT_HISTORY_KEY)
-  if (!row || row.deleted || !Array.isArray(row.value)) return []
-  return row.value as ChatTurnMessage[]
+export function getAssistantHistoryKeyForUser(explicitUid?: string | null): string {
+  const activeUid = (explicitUid ?? getSyncStatus().user?.uid ?? '').trim()
+  return activeUid ? `${ASSISTANT_HISTORY_KEY}:${activeUid}` : ASSISTANT_HISTORY_KEY
 }
 
-export async function saveAssistantHistory(messages: ChatTurnMessage[]): Promise<void> {
-  const trimmed = messages.slice(-30) // mantém histórico enxuto no aparelho
+export async function loadAssistantHistory(explicitUid?: string | null): Promise<ChatTurnMessage[]> {
+  const key = getAssistantHistoryKeyForUser(explicitUid)
+  const row = await getRawRecord('settings', key)
+  if (row && !row.deleted && Array.isArray(row.value)) {
+    return row.value as ChatTurnMessage[]
+  }
+  if (key !== ASSISTANT_HISTORY_KEY) {
+    const legacy = await getRawRecord('settings', ASSISTANT_HISTORY_KEY)
+    if (legacy && !legacy.deleted && Array.isArray(legacy.value)) {
+      return legacy.value as ChatTurnMessage[]
+    }
+  }
+  return []
+}
+
+export async function saveAssistantHistory(
+  messages: ChatTurnMessage[],
+  explicitUid?: string | null,
+): Promise<void> {
+  const key = getAssistantHistoryKeyForUser(explicitUid)
+  const trimmed = messages.slice(-30)
   const now = Date.now()
   await runApplyingRemote(async () => {
     await db.settings.put({
-      key: ASSISTANT_HISTORY_KEY,
+      key,
       value: trimmed,
       updatedAt: now,
       deleted: false,
@@ -1282,15 +1300,24 @@ export async function saveAssistantHistory(messages: ChatTurnMessage[]): Promise
   })
 }
 
-export async function clearAssistantHistory(): Promise<void> {
+export async function clearAssistantHistory(explicitUid?: string | null): Promise<void> {
+  const key = getAssistantHistoryKeyForUser(explicitUid)
   const now = Date.now()
   await runApplyingRemote(async () => {
     await db.settings.put({
-      key: ASSISTANT_HISTORY_KEY,
+      key,
       value: [],
       updatedAt: now,
       deleted: false,
     })
+    if (key !== ASSISTANT_HISTORY_KEY) {
+      await db.settings.put({
+        key: ASSISTANT_HISTORY_KEY,
+        value: [],
+        updatedAt: now,
+        deleted: false,
+      })
+    }
   })
 }
 

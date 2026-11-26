@@ -7,7 +7,13 @@ import {
   restoreSnapshot, type ImportMode,
 } from '../data/backup'
 import { db, setSetting } from '../data/db'
-import { authResetPassword, authSignIn, authSignOut, triggerBackgroundSync } from '../data/sync'
+import {
+  authResetPassword,
+  authSignIn,
+  authSignInWithGoogle,
+  authSignOut,
+  triggerBackgroundSync,
+} from '../data/sync'
 import type { Backup } from '../data/types'
 import { useSetting, useSyncStatus } from '../hooks'
 import {
@@ -359,9 +365,26 @@ export default function Config() {
   }
 
   const doSignOut = async () => {
-    if (!(await confirm('Sair da conta? Os dados locais continuam salvos neste aparelho.', 'sair', false))) return
+    if (!(await confirm('Sair da conta atual?', 'sair', false))) return
     await authSignOut()
-    toast('Você saiu da conta (modo local ativo)')
+    toast('Sessão encerrada')
+  }
+
+  const doGoogleSignIn = async () => {
+    setAuthErr('')
+    setAuthBusy(true)
+    try {
+      const prevUid = syncStatus.user?.uid
+      await authSignInWithGoogle()
+      toast(prevUid ? 'Conta alternada com sucesso' : 'Sessão iniciada com Google')
+    } catch (e) {
+      const code = (e as { code?: string })?.code ?? ''
+      if (!code.includes('popup-closed-by-user') && !code.includes('cancelled-popup-request')) {
+        setAuthErr(authErrorMsg(e))
+      }
+    } finally {
+      setAuthBusy(false)
+    }
   }
 
   const doSyncNow = async () => {
@@ -463,12 +486,46 @@ export default function Config() {
         </div>
       </div>
 
-      <h2>sincronização em nuvem</h2>
+      <h2>conta e sincronização</h2>
       {syncStatus.user ? (
         <div className="card stack">
-          <div className="row between">
-            <span className="muted small">logado como</span>
-            <b className="green">{syncStatus.user.email ?? syncStatus.user.uid}</b>
+          <div className="row between" style={{ gap: 12 }}>
+            <div className="row" style={{ gap: 10 }}>
+              {syncStatus.user.photoURL ? (
+                <img
+                  src={syncStatus.user.photoURL}
+                  alt=""
+                  referrerPolicy="no-referrer"
+                  style={{
+                    width: 36,
+                    height: 36,
+                    borderRadius: 999,
+                    border: '1px solid var(--green)',
+                    objectFit: 'cover',
+                  }}
+                />
+              ) : (
+                <span
+                  className="bus-badge"
+                  style={{ width: 36, height: 36, borderRadius: 999, padding: 0 }}
+                >
+                  {(syncStatus.user.displayName || syncStatus.user.email || 'U')
+                    .slice(0, 1)
+                    .toUpperCase()}
+                </span>
+              )}
+              <div>
+                <div style={{ fontWeight: 700, fontSize: 13 }}>
+                  {syncStatus.user.displayName || syncStatus.user.email || 'Conta conectada'}
+                </div>
+                <div className="muted small">
+                  {syncStatus.user.email ?? syncStatus.user.uid}
+                </div>
+              </div>
+            </div>
+            <span className="chip" title={syncStatus.user.uid}>
+              uid: {syncStatus.user.uid.slice(0, 6)}…
+            </span>
           </div>
           <div className="row between">
             <span className="muted small">última sincronização</span>
@@ -479,19 +536,37 @@ export default function Config() {
             <b className={pendingOutbox > 0 ? 'amber' : ''}>{pendingOutbox}</b>
           </div>
           {syncStatus.error && <div className="small red">{syncStatus.error}</div>}
+          <button
+            className="primary block"
+            disabled={syncStatus.syncing}
+            onClick={() => void doSyncNow()}
+          >
+            {syncStatus.syncing ? 'sincronizando…' : 'sincronizar agora'}
+          </button>
           <div className="grid2">
-            <button className="primary" disabled={syncStatus.syncing} onClick={() => void doSyncNow()}>
-              {syncStatus.syncing ? 'sincronizando…' : 'sincronizar agora'}
+            <button
+              className="ai"
+              disabled={authBusy}
+              onClick={() => void doGoogleSignIn()}
+            >
+              {authBusy ? 'aguarde…' : 'trocar conta Google'}
             </button>
             <button onClick={() => void doSignOut()}>sair</button>
           </div>
         </div>
       ) : (
         <div className="card stack">
+          <button
+            className="ai block"
+            disabled={authBusy}
+            onClick={() => void doGoogleSignIn()}
+          >
+            {authBusy ? 'conectando…' : 'entrar com Google'}
+          </button>
           <Seg
             value={authMode}
             onChange={(v) => { setAuthMode(v); setAuthErr('') }}
-            options={[['login', 'entrar'], ['reset', 'redefinir senha']]}
+            options={[['login', 'e-mail e senha'], ['reset', 'redefinir senha']]}
           />
           <Field label="e-mail" type="email" mode="text" value={email} onChange={setEmail} placeholder="voce@exemplo.com" />
           {authMode !== 'reset' && (
@@ -502,7 +577,7 @@ export default function Config() {
             {authBusy
               ? 'aguarde…'
               : authMode === 'login'
-                ? 'entrar'
+                ? 'entrar com e-mail'
                 : 'enviar link de redefinição'}
           </button>
           {pendingOutbox > 0 && (

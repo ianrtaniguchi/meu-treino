@@ -51,12 +51,12 @@ const ALL_TABS: Tab[] = ['treino', 'dieta', 'corpo', 'assistente', 'noticias', '
  */
 const NAV_TABS: Tab[] = ['treino', 'dieta', 'corpo', 'assistente', 'noticias', 'onibus']
 const NAV_SLOTS: Array<{ tab: Tab; left: number; width: number }> = [
-  { tab: 'treino', left: 0, width: 0.14 },
-  { tab: 'dieta', left: 0.14, width: 0.14 },
-  { tab: 'corpo', left: 0.28, width: 0.14 },
-  { tab: 'assistente', left: 0.42, width: 0.16 },
-  { tab: 'noticias', left: 0.58, width: 0.21 },
-  { tab: 'onibus', left: 0.79, width: 0.21 },
+  { tab: 'treino', left: 0, width: 0.1333 },
+  { tab: 'dieta', left: 0.1333, width: 0.1333 },
+  { tab: 'corpo', left: 0.2666, width: 0.1334 },
+  { tab: 'assistente', left: 0.4, width: 0.2 },
+  { tab: 'noticias', left: 0.6, width: 0.2 },
+  { tab: 'onibus', left: 0.8, width: 0.2 },
 ]
 const TAB_LABELS: Record<Tab, string> = {
   treino: 'Treino (~/treino)',

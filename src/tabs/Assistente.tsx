@@ -39,7 +39,12 @@ const QUICK_PROMPTS = [
 export default function Assistente() {
   const { toast, confirm } = useUi()
   const syncStatus = useSyncStatus()
-  const history = useLiveQuery(() => loadAssistantHistory(), [], [] as ChatTurnMessage[])
+  const activeUid = syncStatus.user?.uid ?? null
+  const history = useLiveQuery(
+    () => loadAssistantHistory(activeUid),
+    [activeUid],
+    [] as ChatTurnMessage[],
+  )
 
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)

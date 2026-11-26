@@ -2,11 +2,15 @@ import { getApps, initializeApp, type FirebaseApp } from 'firebase/app'
 import {
   browserLocalPersistence,
   getAuth,
+  getRedirectResult,
+  GoogleAuthProvider,
   indexedDBLocalPersistence,
   initializeAuth,
   onAuthStateChanged,
   sendPasswordResetEmail,
   signInWithEmailAndPassword,
+  signInWithPopup,
+  signInWithRedirect,
   signOut,
   type Auth,
   type User,
@@ -448,8 +452,15 @@ export async function syncNow(uid: string): Promise<{ pushed: number; pulled: nu
 
 // ---------- Gerenciador de estado de Auth + Sync em background (para a UI) ----------
 
+export interface SyncUser {
+  uid: string
+  email: string | null
+  displayName?: string | null
+  photoURL?: string | null
+}
+
 export interface SyncStatus {
-  user: { uid: string; email: string | null } | null
+  user: SyncUser | null
   syncing: boolean
   error: string | null
   firstLoginPreview: FirstLoginPreview | null
@@ -519,6 +530,79 @@ export async function triggerBackgroundSync(pushOnly = false): Promise<void> {
   }
 }
 
+const ACTIVE_UID_STORAGE_KEY = 'meu_treino_active_uid'
+
+function persistActiveUidToLocalStorage(uid: string | null): void {
+  try {
+    if (typeof globalThis !== 'undefined' && (globalThis as any).localStorage) {
+      const st = (globalThis as any).localStorage as Storage
+      if (uid) st.setItem(ACTIVE_UID_STORAGE_KEY, uid)
+      else st.removeItem(ACTIVE_UID_STORAGE_KEY)
+    }
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * Garante isolamento completo entre contas diferentes no mesmo aparelho:
+ * se o aparelho estava vinculado ao usuário A e agora entrou o usuário B (`prevUid !== nextUid`),
+ * salva um snapshot local de segurança, limpa as tabelas locais de trabalho e marca `activeAccountUid = nextUid`
+ * para que os dados da conta anterior nunca sejam misturados nem enviados para a conta secundária.
+ */
+export async function isolateAccountOnSwitch(nextUid: string): Promise<boolean> {
+  const prevRow = await getRawRecord<{ key: string; value: unknown }>('settings', 'activeAccountUid')
+  const prevUid = typeof prevRow?.value === 'string' ? prevRow.value.trim() : ''
+
+  if (prevUid && prevUid !== nextUid) {
+    await createSnapshot(
+      'seguranca',
+      `Troca de conta (${prevUid.slice(0, 6)} → ${nextUid.slice(0, 6)})`,
+    )
+    await runApplyingRemote(async () => {
+      await db.transaction(
+        'rw',
+        [...TABLE_NAMES.map((t) => db.table(t)), db.outbox],
+        async () => {
+          await db.outbox.clear()
+          for (const t of ['sessions', 'routines', 'meals', 'body'] as TableName[]) {
+            await db.table(t).clear()
+          }
+          const exs = await db.exercises.toArray()
+          await db.exercises.bulkDelete(exs.filter((e) => !e.builtin).map((e) => e.id))
+          const fds = await db.foods.toArray()
+          await db.foods.bulkDelete(fds.filter((f) => !f.builtin).map((f) => f.id))
+          for (const k of SYNCABLE_SETTINGS) {
+            await db.settings.delete(k)
+          }
+          await db.settings.delete('lastSyncAt')
+          await db.settings.put({
+            key: 'activeAccountUid',
+            value: nextUid,
+            updatedAt: Date.now(),
+            deleted: false,
+          })
+        },
+      )
+    })
+    persistActiveUidToLocalStorage(nextUid)
+    return true
+  }
+
+  if (prevUid !== nextUid) {
+    await runApplyingRemote(async () => {
+      await db.settings.put({
+        key: 'activeAccountUid',
+        value: nextUid,
+        updatedAt: Date.now(),
+        deleted: false,
+      })
+    })
+  }
+  persistActiveUidToLocalStorage(nextUid)
+  return false
+}
+
 export function initSyncManager(): void {
   if (initialized || typeof window === 'undefined') return
   initialized = true
@@ -535,12 +619,23 @@ export function initSyncManager(): void {
 
   try {
     const auth = getFirebaseAuth()
+    void getRedirectResult(auth).catch(() => null)
     onAuthStateChanged(auth, async (fbUser: User | null) => {
       if (!fbUser) {
+        persistActiveUidToLocalStorage(null)
         setStatus({ user: null, syncing: false, error: null, firstLoginPreview: null })
         return
       }
-      setStatus({ user: { uid: fbUser.uid, email: fbUser.email }, error: null })
+      await isolateAccountOnSwitch(fbUser.uid)
+      setStatus({
+        user: {
+          uid: fbUser.uid,
+          email: fbUser.email,
+          displayName: fbUser.displayName,
+          photoURL: fbUser.photoURL,
+        },
+        error: null,
+      })
       await triggerBackgroundSync(false)
     })
   } catch {
@@ -548,16 +643,36 @@ export function initSyncManager(): void {
   }
 }
 
-// ---------- Ações de autenticação (apenas e-mail e senha; criação de conta desativada na UI) ----------
+// ---------- Ações de autenticação (E-mail/Senha + Google OAuth multi-conta) ----------
 
 export async function authSignIn(email: string, pass: string): Promise<void> {
   const auth = getFirebaseAuth()
   await signInWithEmailAndPassword(auth, email.trim(), pass)
 }
 
+export async function authSignInWithGoogle(): Promise<void> {
+  const auth = getFirebaseAuth()
+  const provider = new GoogleAuthProvider()
+  provider.setCustomParameters({ prompt: 'select_account' })
+  try {
+    await signInWithPopup(auth, provider)
+  } catch (err) {
+    const code = (err as { code?: string })?.code ?? ''
+    if (
+      code.includes('popup-blocked') ||
+      code.includes('operation-not-supported-in-this-environment')
+    ) {
+      await signInWithRedirect(auth, provider)
+      return
+    }
+    throw err
+  }
+}
+
 export async function authSignOut(): Promise<void> {
   const auth = getFirebaseAuth()
   await signOut(auth)
+  persistActiveUidToLocalStorage(null)
   setStatus({ user: null, syncing: false, error: null, firstLoginPreview: null })
 }
 

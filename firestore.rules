@@ -9,12 +9,8 @@ service cloud.firestore {
       return request.auth != null;
     }
 
-    function isOwner() {
-      return isAuthenticated() && request.auth.uid == 'tH4A7sYnH1WDUdBVDd1mfltMPdj2';
-    }
-
     function isUserOwner(uid) {
-      return isOwner() && request.auth.uid == uid;
+      return isAuthenticated() && request.auth.uid == uid;
     }
 
     function isValidFcmToken(data) {
@@ -68,43 +64,43 @@ service cloud.firestore {
     // Notícias do Ifes Campus Vitória (escrita só pelo Worker)
     // ---------------------------------------------------------------
     match /ifesNoticias/{docId} {
-      allow read: if isOwner();
+      allow read: if isAuthenticated();
       allow write: if false;
     }
 
     // ---------------------------------------------------------------
-    // Tokens FCM (Web Push): só o próprio dono
+    // Tokens FCM (Web Push): isolamento estrito por uid
     // ---------------------------------------------------------------
     match /fcmTokens/{tokenId} {
-      allow get: if isOwner() && (resource == null || resource.data.uid == request.auth.uid);
-      allow list: if isOwner() && resource.data.uid == request.auth.uid;
-      allow create: if isOwner() && isValidFcmToken(request.resource.data);
-      allow update: if isOwner() &&
+      allow get: if isAuthenticated() && (resource == null || resource.data.uid == request.auth.uid);
+      allow list: if isAuthenticated() && resource.data.uid == request.auth.uid;
+      allow create: if isAuthenticated() && isValidFcmToken(request.resource.data);
+      allow update: if isAuthenticated() &&
                     resource.data.uid == request.auth.uid &&
                     request.resource.data.uid == resource.data.uid &&
                     isValidFcmToken(request.resource.data);
-      allow delete: if isOwner() && resource.data.uid == request.auth.uid;
+      allow delete: if isAuthenticated() && resource.data.uid == request.auth.uid;
     }
 
     // ---------------------------------------------------------------
-    // Lembretes agendados (Web Push): só o próprio dono
+    // Lembretes agendados (Web Push): isolamento estrito por uid
     // ---------------------------------------------------------------
     match /pushReminders/{reminderId} {
-      allow get: if isOwner() && (resource == null || resource.data.uid == request.auth.uid);
-      allow list: if isOwner() && resource.data.uid == request.auth.uid;
-      allow create: if isOwner() && isValidPushReminder(request.resource.data);
-      allow update: if isOwner() &&
+      allow get: if isAuthenticated() && (resource == null || resource.data.uid == request.auth.uid);
+      allow list: if isAuthenticated() && resource.data.uid == request.auth.uid;
+      allow create: if isAuthenticated() && isValidPushReminder(request.resource.data);
+      allow update: if isAuthenticated() &&
                     resource.data.uid == request.auth.uid &&
                     request.resource.data.uid == resource.data.uid &&
                     isValidPushReminder(request.resource.data);
-      allow delete: if isOwner() && resource.data.uid == request.auth.uid;
+      allow delete: if isAuthenticated() && resource.data.uid == request.auth.uid;
     }
 
     // ---------------------------------------------------------------
     // Metadados do coletor (meta/ifesNoticias): escrita só pelo Worker
     // ---------------------------------------------------------------
     match /meta/{docId} {
-      allow read: if isOwner();
+      allow read: if isAuthenticated();
       allow write: if false;
     }
   }

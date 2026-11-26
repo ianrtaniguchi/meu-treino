@@ -76,6 +76,18 @@
     inset 0 1px 1px rgba(255, 255, 255, 0.28),
     0 0 16px rgba(57, 211, 83, 0.22),
     0 4px 12px rgba(0, 0, 0, 0.26);
+  --ai-orb-bg: radial-gradient(
+    120% 120% at 50% 18%,
+    rgba(255, 255, 255, 0.28) 0%,
+    rgba(56, 189, 248, 0.26) 48%,
+    rgba(57, 211, 83, 0.22) 100%
+  );
+  --ai-orb-border: rgba(255, 255, 255, 0.34);
+  --ai-orb-shadow:
+    inset 0 1.5px 2px rgba(255, 255, 255, 0.42),
+    inset 0 -1px 2px rgba(56, 189, 248, 0.25),
+    0 8px 20px rgba(0, 0, 0, 0.48),
+    0 0 18px rgba(56, 189, 248, 0.26);
 
   --radius-sm: 8px;
   --radius-md: 11px;
@@ -155,6 +167,17 @@
   --lens-shadow:
     inset 0 1px 1px rgba(255, 255, 255, 0.95),
     0 2px 10px rgba(21, 128, 61, 0.16);
+  --ai-orb-bg: radial-gradient(
+    120% 120% at 50% 18%,
+    rgba(255, 255, 255, 0.98) 0%,
+    rgba(224, 242, 254, 0.92) 52%,
+    rgba(187, 247, 208, 0.88) 100%
+  );
+  --ai-orb-border: rgba(2, 132, 199, 0.36);
+  --ai-orb-shadow:
+    inset 0 1.5px 2px rgba(255, 255, 255, 1),
+    0 8px 18px rgba(15, 23, 42, 0.16),
+    0 0 14px rgba(2, 132, 199, 0.18);
 }
 
 [data-theme="baby"] {
@@ -225,6 +248,17 @@
   --lens-shadow:
     inset 0 1px 1px rgba(255, 255, 255, 0.95),
     0 2px 12px rgba(217, 78, 130, 0.22);
+  --ai-orb-bg: radial-gradient(
+    120% 120% at 50% 18%,
+    rgba(255, 255, 255, 0.98) 0%,
+    rgba(252, 231, 243, 0.94) 52%,
+    rgba(243, 232, 255, 0.9) 100%
+  );
+  --ai-orb-border: rgba(217, 78, 130, 0.42);
+  --ai-orb-shadow:
+    inset 0 1.5px 2px rgba(255, 255, 255, 1),
+    0 8px 18px rgba(217, 78, 130, 0.24),
+    0 0 14px rgba(147, 51, 234, 0.18);
 }
 
 *, *::before, *::after { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -285,8 +319,9 @@ button, input, select, textarea { font-family: var(--mono); font-variant-numeric
   transform: translateX(-50%);
   z-index: 40;
   display: flex;
-  align-items: stretch;
-  width: min(calc(100% - 24px), 420px);
+  align-items: center;
+  overflow: visible;
+  width: min(calc(100% - 20px), 430px);
   height: var(--tabbar-h);
   margin: 0;
   padding: 5px;
@@ -386,39 +421,44 @@ button, input, select, textarea { font-family: var(--mono); font-variant-numeric
   width: 28px;
   height: 28px;
 }
-/* Destaque central elegante do botão da IA (~18% maior com halo Liquid Glass) */
+/* Bolinha central do Assistente visivelmente maior (52px) e elevada (-5px) na barra Liquid Glass */
 .tabbar button.ai-center {
   color: var(--text);
+  overflow: visible;
 }
 .tabbar button.ai-center svg {
-  width: 28px;
-  height: 28px;
-  stroke-width: 1.95;
+  width: 26px;
+  height: 26px;
+  stroke-width: 2;
 }
 .tabbar-icon-wrap.ai-halo {
-  width: 44px;
-  height: 44px;
+  width: 52px;
+  height: 52px;
+  min-width: 52px;
+  min-height: 52px;
   border-radius: 9999px;
-  background: radial-gradient(
-    circle at 50% 25%,
-    rgba(255, 255, 255, 0.2) 0%,
-    rgba(56, 189, 248, 0.16) 52%,
-    rgba(57, 211, 83, 0.12) 100%
-  );
-  border: 1px solid rgba(255, 255, 255, 0.22);
-  box-shadow:
-    inset 0 1px 1px rgba(255, 255, 255, 0.32),
-    0 0 14px rgba(56, 189, 248, 0.18);
+  transform: translateY(-5px);
+  background: var(--ai-orb-bg);
+  backdrop-filter: blur(18px) saturate(190%);
+  -webkit-backdrop-filter: blur(18px) saturate(190%);
+  border: 1.5px solid var(--ai-orb-border);
+  box-shadow: var(--ai-orb-shadow);
   transition:
-    transform 240ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 260ms cubic-bezier(0.22, 1, 0.36, 1),
     box-shadow 240ms ease,
-    border-color 220ms ease;
+    border-color 220ms ease,
+    background 220ms ease;
+}
+.tabbar button.ai-center:active .tabbar-icon-wrap.ai-halo {
+  transform: translateY(-3px) scale(0.95);
 }
 .tabbar button.ai-center.on .tabbar-icon-wrap.ai-halo {
+  transform: translateY(-6px) scale(1.04);
   border-color: var(--green);
   box-shadow:
-    inset 0 1px 2px rgba(255, 255, 255, 0.42),
-    0 0 18px rgba(57, 211, 83, 0.34);
+    inset 0 1.5px 2px rgba(255, 255, 255, 0.55),
+    0 10px 22px rgba(0, 0, 0, 0.38),
+    0 0 20px rgba(57, 211, 83, 0.42);
 }
 .tab-badge {
   position: absolute; top: -4px; right: -8px;

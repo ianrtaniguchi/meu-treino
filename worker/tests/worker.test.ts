@@ -235,6 +235,46 @@ describe('Cloudflare Worker Proxy (/chat)', () => {
     expect(res.status).toBe(403)
   })
 
+  it('suporta múltiplas contas (ALLOWED_UIDS com lista separada por vírgula ou ALLOWED_UID="*") isoladas pelo uid do token', async () => {
+    const secondaryUid = 'uid-conta-secundaria-777'
+    const multiEnv: Env = {
+      ...makeBaseEnv(),
+      ALLOWED_UID: '*',
+      GROQ_API_KEY: VALID_FIRESTORE_KEY,
+    }
+    const fetcher = createMockFetcher()
+
+    const secondaryToken = await signTestJwt({
+      iss: `https://securetoken.google.com/${PROJECT_ID}`,
+      aud: PROJECT_ID,
+      sub: secondaryUid,
+      iat: nowSec - 30,
+      exp: nowSec + 3600,
+    })
+
+    const makeSecondaryReq = () =>
+      new Request('https://worker.example.com/chat', {
+        method: 'POST',
+        headers: {
+          Origin: ALLOWED_ORIGIN,
+          Authorization: `Bearer ${secondaryToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ messages: [{ role: 'user', content: 'oi da conta secundária' }] }),
+      })
+    const res = await handleRequest(makeSecondaryReq(), multiEnv, { fetcher, nowMs })
+    expect(res.status).toBe(200)
+
+    // Lista explícita em ALLOWED_UIDS também aceita a conta secundária
+    const listEnv: Env = {
+      ...makeBaseEnv(),
+      ALLOWED_UIDS: `${MY_UID}, ${secondaryUid}`,
+      GROQ_API_KEY: VALID_FIRESTORE_KEY,
+    }
+    const resListOk = await handleRequest(makeSecondaryReq(), listEnv, { fetcher, nowMs })
+    expect(resListOk.status).toBe(200)
+  })
+
   it('recusa corpo maior que 64 KB com 413', async () => {
     const env = makeBaseEnv()
     const fetcher = createMockFetcher()

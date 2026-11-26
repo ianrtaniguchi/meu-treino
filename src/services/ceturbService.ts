@@ -339,10 +339,17 @@ export function filterLines(lines: CeturbLine[], query: string): CeturbLine[] {
   })
 }
 
-// ---------- Favoritos e Recentes (localStorage) ----------
+// ---------- Favoritos e Recentes (localStorage isolado por UID quando autenticado) ----------
+
+function getScopedFavoritesKey(): string {
+  const storage = getStorage()
+  const activeUid = storage?.getItem('meu_treino_active_uid')?.trim()
+  return activeUid ? `${STORAGE_KEY_FAVORITES}_${activeUid}` : STORAGE_KEY_FAVORITES
+}
 
 export function getFavoriteLineIds(): string[] {
-  const list = readStorageJson<unknown>(STORAGE_KEY_FAVORITES)
+  const key = getScopedFavoritesKey()
+  const list = readStorageJson<unknown>(key) ?? readStorageJson<unknown>(STORAGE_KEY_FAVORITES)
   if (!Array.isArray(list)) return []
   return list
     .filter((x): x is string => typeof x === 'string' && x.trim().length > 0)
@@ -355,7 +362,7 @@ export function toggleFavoriteLineId(lineId: string): string[] {
   const next = current.includes(normId)
     ? current.filter((id) => id !== normId)
     : [normId, ...current]
-  writeStorageJson(STORAGE_KEY_FAVORITES, next)
+  writeStorageJson(getScopedFavoritesKey(), next)
   return next
 }
 

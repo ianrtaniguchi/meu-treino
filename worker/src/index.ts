@@ -30,8 +30,10 @@ export interface Env {
   GROQ_VISION_MODEL?: string
   /** ID do projeto Firebase (padrão: "meu-treino-2007") */
   FIREBASE_PROJECT_ID?: string
-  /** UID único autorizado a usar o assistente */
-  ALLOWED_UID: string
+  /** UID autorizado ou "*" para qualquer usuário autenticado no Firebase Auth */
+  ALLOWED_UID?: string
+  /** Lista opcional de UIDs autorizados separados por vírgula (ou "*" para multi-usuário) */
+  ALLOWED_UIDS?: string
   /** Origens permitidas no CORS separadas por vírgula */
   ALLOWED_ORIGINS?: string
   /** Limite por minuto por UID (padrão: "20") */
@@ -116,6 +118,33 @@ export function resetWorkerCachesForTest() {
   googleAccessTokenCache = null
   resetIfesCachesForTest()
   resetCeturbCachesForTest()
+}
+
+/**
+ * Verifica se o `uid` extraído do JWT do Firebase Auth está autorizado:
+ * - Se `ALLOWED_UIDS` ou `ALLOWED_UID` contiver `"*"` (ou `"any"`), permite qualquer usuário autenticado no Firebase Auth (modo multi-conta).
+ * - Se for uma lista de UIDs separados por vírgula (ex.: `"uid1,uid2"`), permite qualquer UID presente na lista.
+ * - Recusa placeholders não configurados (`[SEU_UID]`, `[COLE_SEU_UID_AQUI]`) ou string vazia quando explicitamente definida como vazia.
+ */
+export function isUidAllowed(uid: string | undefined, env: Env): uid is string {
+  const cleanUid = (uid ?? '').trim()
+  if (!cleanUid) return false
+
+  const rawSource =
+    env.ALLOWED_UIDS !== undefined ? env.ALLOWED_UIDS : env.ALLOWED_UID !== undefined ? env.ALLOWED_UID : '*'
+  const raw = String(rawSource ?? '').trim()
+  if (!raw) return false
+
+  const tokens = raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => Boolean(s) && s !== '[SEU_UID]' && s !== '[COLE_SEU_UID_AQUI]')
+
+  if (tokens.length === 0) return false
+  if (tokens.includes('*') || tokens.some((t) => t.toLowerCase() === 'any')) {
+    return true
+  }
+  return tokens.includes(cleanUid)
 }
 
 // ---------- Validação e busca da chave do Groq no Firestore (REST) ----------
@@ -1254,13 +1283,7 @@ export async function handleRequest(
     return jsonResponse(401, { error: 'error: token de autenticação inválido ou expirado.' }, origin)
   }
 
-  const allowedUid = (env.ALLOWED_UID ?? '').trim()
-  if (
-    !allowedUid ||
-    allowedUid === '[SEU_UID]' ||
-    allowedUid === '[COLE_SEU_UID_AQUI]' ||
-    jwtPayload.sub !== allowedUid
-  ) {
+  if (!isUidAllowed(jwtPayload.sub, env)) {
     return jsonResponse(403, { error: 'error: usuário não autorizado para este assistente.' }, origin)
   }
 

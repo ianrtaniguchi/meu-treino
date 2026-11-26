@@ -7,6 +7,7 @@ import {
   checkFirstLoginState,
   completeFirstLoginMerge,
   flushOutbox,
+  isolateAccountOnSwitch,
   mergeRemoteRecords,
   setCloudAdapter,
   syncNow,
@@ -300,5 +301,26 @@ describe('primeiro login com dados locais', () => {
     expect(await checkFirstLoginState('user-1')).toBeNull()
     const res = await syncNow('user-1')
     expect(res.pushed).toBe(0)
+  })
+
+  it('isola os dados locais ao trocar de uma conta para outra (isolateAccountOnSwitch), criando snapshot de segurança', async () => {
+    await isolateAccountOnSwitch('user-conta-principal')
+    await db.sessions.put(makeSession('sess-principal', '2026-11-10', 'treino da conta principal'))
+    await db.meals.put(makeMeal('meal-principal', '2026-11-10'))
+    expect(await db.sessions.count()).toBe(1)
+
+    // Mesmo usuário reabrindo o app não limpa nada
+    const switchedSame = await isolateAccountOnSwitch('user-conta-principal')
+    expect(switchedSame).toBe(false)
+    expect(await db.sessions.count()).toBe(1)
+
+    // Troca para conta secundária limpa as tabelas de trabalho e salva snapshot de segurança
+    const switchedDifferent = await isolateAccountOnSwitch('user-conta-secundaria')
+    expect(switchedDifferent).toBe(true)
+    expect(await db.sessions.count()).toBe(0)
+    expect(await db.meals.count()).toBe(0)
+
+    const snaps = await listSnapshots()
+    expect(snaps.some((s) => s.reason.includes('Troca de conta'))).toBe(true)
   })
 })
