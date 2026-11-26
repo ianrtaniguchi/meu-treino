@@ -20,6 +20,9 @@ import {
   parseIfesDateTimeToIso,
   parseIfesVitoriaHtml,
   parseIfesVitoriaRss,
+  parseServiceAccountSecret,
+  PWA_APP_ICON_URL,
+  PWA_APP_NOTICIAS_URL,
   resetIfesCachesForTest,
   runIfesCron,
   selectNewNewsItems,
@@ -295,9 +298,27 @@ describe('Notícias do Ifes Campus Vitória — Parser, Filtro, Deduplicação, 
     expect(fcmMsg.message.notification.body.length).toBeLessThanOrEqual(120)
     expect(fcmMsg.message.data.url).toBe('https://vitoria.ifes.edu.br/noticias/18574-edital')
     expect(fcmMsg.message.data.route).toBe('noticias')
+    expect(fcmMsg.message.webpush.headers).toEqual({
+      TTL: '86400',
+      Urgency: 'high',
+    })
+    expect(fcmMsg.message.webpush.notification.icon).toBe(PWA_APP_ICON_URL)
+    expect(fcmMsg.message.webpush.notification.badge).toBe(PWA_APP_ICON_URL)
     expect(fcmMsg.message.webpush.fcm_options.link).toBe(
       'https://vitoria.ifes.edu.br/noticias/18574-edital',
     )
+
+    // 5. Se a URL for relativa (ex.: "./?tab=noticias" no push de teste), normaliza para HTTPS canônico do PWA
+    const relativeItem = {
+      title: 'Teste de notificação do app',
+      body: 'Corpo do teste',
+      url: './?tab=noticias',
+      route: 'noticias' as const,
+      newsId: 'test-push',
+    }
+    const fcmRelativeMsg = buildFcmHttpV1Message('token-xyz', relativeItem) as any
+    expect(fcmRelativeMsg.message.webpush.fcm_options.link).toBe(PWA_APP_NOTICIAS_URL)
+    expect(fcmRelativeMsg.message.data.url).toBe(PWA_APP_NOTICIAS_URL)
   })
 
   it('gera e assina JWT OAuth2 (RS256 via WebCrypto) válido para a Service Account do Firebase', async () => {
@@ -553,7 +574,7 @@ describe('Notícias do Ifes Campus Vitória — Parser, Filtro, Deduplicação, 
     expect([...firestoreDocs.keys()].filter((k) => k.startsWith('ifesNoticias/')).length).toBe(4)
   })
 
-  it('detecta códigos de token FCM inválido (UNREGISTERED e INVALID_ARGUMENT) corretamente', () => {
+  it('detecta códigos de token FCM inválido (SOMENTE 404 UNREGISTERED e 400 INVALID_ARGUMENT) e valida project_id da Service Account', () => {
     expect(
       isFcmTokenInvalidResponse(404, {
         error: {
@@ -562,6 +583,28 @@ describe('Notícias do Ifes Campus Vitória — Parser, Filtro, Deduplicação, 
         },
       }),
     ).toBe(true)
+
+    // 404 sem UNREGISTERED (ex.: URL/projeto errado) NÃO deve apagar token
+    expect(
+      isFcmTokenInvalidResponse(404, {
+        error: {
+          status: 'NOT_FOUND',
+          message: 'Project not found',
+        },
+      }),
+    ).toBe(false)
+
+    // 401 THIRD_PARTY_AUTH_ERROR NÃO deve apagar token silenciosamente sem diagnóstico
+    expect(
+      isFcmTokenInvalidResponse(401, {
+        error: {
+          code: 401,
+          message: 'Third party auth error.',
+          status: 'UNAUTHENTICATED',
+          details: [{ errorCode: 'THIRD_PARTY_AUTH_ERROR' }],
+        },
+      }),
+    ).toBe(false)
 
     expect(
       isFcmTokenInvalidResponse(400, {
@@ -580,6 +623,18 @@ describe('Notícias do Ifes Campus Vitória — Parser, Filtro, Deduplicação, 
         },
       }),
     ).toBe(false)
+
+    // Validação de project_id no FCM_SERVICE_ACCOUNT
+    expect(() =>
+      parseServiceAccountSecret(
+        JSON.stringify({
+          project_id: 'outro-projeto-errado',
+          client_email: 'sa@outro-projeto.iam.gserviceaccount.com',
+          private_key: '-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----',
+        }),
+        'meu-treino-2007',
+      ),
+    ).toThrow(/meu-treino-2007/)
   })
 
   it('rotas autenticadas GET /ifes/status e POST /push-test exigem Firebase ID token e respeitam ALLOWED_UID', async () => {

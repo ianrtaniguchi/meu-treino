@@ -1,6 +1,8 @@
 export const IFES_VITORIA_NEWS_URL = 'https://vitoria.ifes.edu.br/noticias'
 export const IFES_VITORIA_RSS_URL = 'https://vitoria.ifes.edu.br/noticias?format=feed&type=rss'
 export const IFES_VITORIA_ORIGIN = 'https://vitoria.ifes.edu.br'
+export const PWA_APP_NOTICIAS_URL = 'https://ianrtaniguchi.github.io/meu-treino/?tab=noticias'
+export const PWA_APP_ICON_URL = 'https://ianrtaniguchi.github.io/meu-treino/icon-192.png'
 export const MAX_PUSHES_PER_RUN = 5
 export const MAX_PUSH_BODY_CHARS = 120
 
@@ -360,36 +362,44 @@ export function buildFcmHttpV1Message(
   fcmToken: string,
   notif: PushNotificationPayload,
 ): Record<string, unknown> {
-  const body = truncateSummary(notif.body, MAX_PUSH_BODY_CHARS)
+  const title = String(notif.title || 'Notícias do Ifes – Campus Vitória').trim()
+  const body = truncateSummary(String(notif.body || title), MAX_PUSH_BODY_CHARS)
+  const httpsLink = /^https:\/\//i.test(String(notif.url || '').trim())
+    ? String(notif.url).trim()
+    : PWA_APP_NOTICIAS_URL
+  const route = String(notif.route || 'noticias')
+  const newsId = String(notif.newsId || 'ifes-noticias')
+
   return {
     message: {
       token: fcmToken,
       notification: {
-        title: notif.title,
+        title,
         body,
       },
       data: {
-        url: notif.url,
-        route: notif.route,
-        newsId: notif.newsId,
+        url: httpsLink,
+        route,
+        newsId,
       },
       webpush: {
         headers: {
+          TTL: '86400',
           Urgency: 'high',
         },
         notification: {
-          title: notif.title,
+          title,
           body,
-          icon: '/icon-192.png',
-          badge: '/icon-192.png',
+          icon: PWA_APP_ICON_URL,
+          badge: PWA_APP_ICON_URL,
           data: {
-            url: notif.url,
-            route: notif.route,
-            newsId: notif.newsId,
+            url: httpsLink,
+            route,
+            newsId,
           },
         },
         fcm_options: {
-          link: notif.url,
+          link: httpsLink,
         },
       },
     },
@@ -397,14 +407,19 @@ export function buildFcmHttpV1Message(
 }
 
 /**
- * Identifica se a resposta de erro do FCM HTTP v1 indica token inválido ou expirado
- * (`UNREGISTERED` ou `INVALID_ARGUMENT` referente ao token), devendo ser removido de `fcmTokens`.
+ * Identifica se a resposta de erro do FCM HTTP v1 indica token inválido ou expirado:
+ * SOMENTE `404 UNREGISTERED` ou `400 INVALID_ARGUMENT` (token malformado/inválido).
  */
 export function isFcmTokenInvalidResponse(status: number, responseBody: unknown): boolean {
-  if (status === 404) return true
   const raw = typeof responseBody === 'string' ? responseBody : JSON.stringify(responseBody ?? {})
-  if (raw.includes('UNREGISTERED')) return true
-  if (status === 400 && (raw.includes('INVALID_ARGUMENT') || raw.toLowerCase().includes('not a valid fcm registration token'))) {
+  if (status === 404 && raw.includes('UNREGISTERED')) {
+    return true
+  }
+  if (
+    status === 400 &&
+    (raw.includes('INVALID_ARGUMENT') ||
+      raw.toLowerCase().includes('not a valid fcm registration token'))
+  ) {
     return true
   }
   return false
@@ -481,7 +496,10 @@ export function resetIfesCachesForTest() {
   serviceAccountTokenCache = null
 }
 
-export function parseServiceAccountSecret(rawSecret?: string): ServiceAccountCredentials {
+export function parseServiceAccountSecret(
+  rawSecret?: string,
+  expectedProjectId?: string,
+): ServiceAccountCredentials {
   if (!rawSecret || !rawSecret.trim()) {
     throw new Error('Secret FCM_SERVICE_ACCOUNT não configurado no Worker.')
   }
@@ -493,6 +511,12 @@ export function parseServiceAccountSecret(rawSecret?: string): ServiceAccountCre
   }
   if (!parsed?.project_id || !parsed?.client_email || !parsed?.private_key) {
     throw new Error('FCM_SERVICE_ACCOUNT incompleto (exige project_id, client_email e private_key).')
+  }
+  const targetProject = (expectedProjectId ?? 'meu-treino-2007').trim()
+  if (targetProject && String(parsed.project_id).trim() !== targetProject) {
+    throw new Error(
+      `FCM_SERVICE_ACCOUNT pertence ao projeto "${parsed.project_id}", mas o projeto esperado é "${targetProject}". Gere a Service Account no projeto Firebase "${targetProject}".`,
+    )
   }
   return parsed as ServiceAccountCredentials
 }
@@ -760,16 +784,42 @@ export async function sendFcmNotificationToToken(
     }
 
     const errText = await res.text()
+    console.error(
+      `[fcm-error] status=${res.status} docId=${tokenDoc.docId} token=${preview} body=${errText}`,
+    )
     const invalid = isFcmTokenInvalidResponse(res.status, errText)
     if (invalid && tokenDoc.docId) {
+      console.warn(
+        `[fcm-token-delete] Removendo token inválido docId=${tokenDoc.docId} (${preview}). Body completo: ${errText}`,
+      )
       await deleteFcmTokenDoc(projectId, accessToken, tokenDoc.docId, fetcher)
     }
+
+    let detailedReason = `HTTP ${res.status}: ${errText.slice(0, 240)}`
+    try {
+      const parsedErr = JSON.parse(errText) as {
+        error?: { message?: string; status?: string; details?: Array<{ errorCode?: string }> }
+      }
+      const msg = parsedErr?.error?.message ?? ''
+      const statusStr = parsedErr?.error?.status ?? ''
+      const fcmCode = parsedErr?.error?.details?.find((d) => d?.errorCode)?.errorCode ?? ''
+      if (res.status === 401 || fcmCode === 'THIRD_PARTY_AUTH_ERROR' || msg.includes('Third party auth error')) {
+        detailedReason =
+          `HTTP ${res.status}: ${msg || 'Third party auth error.'} (${statusStr || 'UNAUTHENTICATED'}) — ` +
+          'Token Web Push vinculado a outra chave VAPID ou certificado VAPID divergente no Firebase Console. Toque em "$ ativar notificações" para recriar a inscrição.'
+      } else if (msg) {
+        detailedReason = `HTTP ${res.status}: ${msg}${statusStr ? ` (${statusStr})` : ''}`
+      }
+    } catch {
+      // mantém detailedReason bruto
+    }
+
     return {
       docId: tokenDoc.docId,
       tokenPreview: preview,
       ok: false,
       status: res.status,
-      reason: invalid ? 'Token inválido/expirado (removido automaticamente)' : `HTTP ${res.status}: ${errText.slice(0, 140)}`,
+      reason: invalid ? `Token inválido/expirado removido (${detailedReason})` : detailedReason,
       removedInvalidToken: invalid,
     }
   } catch (e) {
@@ -803,8 +853,8 @@ export async function runIfesCron(
   const nowMs = deps.nowMs ?? Date.now()
   const nowIso = new Date(nowMs).toISOString()
 
-  const sa = parseServiceAccountSecret(env.FCM_SERVICE_ACCOUNT)
-  const projectId = (env.FIREBASE_PROJECT_ID ?? sa.project_id ?? 'meu-treino-2007').trim()
+  const projectId = (env.FIREBASE_PROJECT_ID ?? 'meu-treino-2007').trim() || 'meu-treino-2007'
+  const sa = parseServiceAccountSecret(env.FCM_SERVICE_ACCOUNT, projectId)
   const accessToken = await getServiceAccountAccessToken(sa, fetcher, nowMs)
 
   const prevMeta = await readIfesMeta(projectId, accessToken, fetcher)
@@ -925,8 +975,8 @@ export async function getIfesStatusReport(
 ): Promise<Record<string, unknown>> {
   const fetcher = deps.fetcher ?? fetch
   const nowMs = deps.nowMs ?? Date.now()
-  const sa = parseServiceAccountSecret(env.FCM_SERVICE_ACCOUNT)
-  const projectId = (env.FIREBASE_PROJECT_ID ?? sa.project_id ?? 'meu-treino-2007').trim()
+  const projectId = (env.FIREBASE_PROJECT_ID ?? 'meu-treino-2007').trim() || 'meu-treino-2007'
+  const sa = parseServiceAccountSecret(env.FCM_SERVICE_ACCOUNT, projectId)
   const accessToken = await getServiceAccountAccessToken(sa, fetcher, nowMs)
   const meta = await readIfesMeta(projectId, accessToken, fetcher)
   const existingIds = await listExistingNewsIds(projectId, accessToken, fetcher)
@@ -954,8 +1004,8 @@ export async function sendTestPushToUserTokens(
 }> {
   const fetcher = deps.fetcher ?? fetch
   const nowMs = deps.nowMs ?? Date.now()
-  const sa = parseServiceAccountSecret(env.FCM_SERVICE_ACCOUNT)
-  const projectId = (env.FIREBASE_PROJECT_ID ?? sa.project_id ?? 'meu-treino-2007').trim()
+  const projectId = (env.FIREBASE_PROJECT_ID ?? 'meu-treino-2007').trim() || 'meu-treino-2007'
+  const sa = parseServiceAccountSecret(env.FCM_SERVICE_ACCOUNT, projectId)
   const accessToken = await getServiceAccountAccessToken(sa, fetcher, nowMs)
 
   const allTokens = await listFcmTokens(projectId, accessToken, fetcher)
@@ -964,7 +1014,7 @@ export async function sendTestPushToUserTokens(
   const testPayload: PushNotificationPayload = {
     title: 'Teste de notificação do app',
     body: 'Notificações das notícias do Ifes Campus Vitória estão ativas neste aparelho.',
-    url: './?tab=noticias',
+    url: PWA_APP_NOTICIAS_URL,
     route: 'noticias',
     newsId: 'test-push',
   }

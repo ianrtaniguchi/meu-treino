@@ -25,6 +25,7 @@ import {
   enablePushNotifications,
   fetchIfesWorkerStatus,
   formatKeywordsInput,
+  getActiveVapidKeyPreview,
   getNotificationDiagnosticsLocal,
   getNotificationPermissionLabel,
   getSavedLocalFcmToken,
@@ -628,6 +629,10 @@ export default function Config() {
                   ? `local (${getSavedLocalFcmToken()!.slice(0, 12)}…)`
                   : 'não'}
             </b>
+          </div>
+          <div className="row between small">
+            <span className="muted">chave VAPID ativa no app</span>
+            <b>{getActiveVapidKeyPreview()}</b>
           </div>
           <div className="row between small">
             <span className="muted">última notificação recebida</span>

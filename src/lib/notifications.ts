@@ -1,6 +1,7 @@
 import { getApps, initializeApp } from 'firebase/app'
 import {
   collection,
+  deleteDoc,
   doc,
   getDoc,
   getDocs,
@@ -13,7 +14,13 @@ import {
   where,
   type Unsubscribe,
 } from 'firebase/firestore'
-import { getMessaging, getToken, isSupported as isMessagingSupported, onMessage } from 'firebase/messaging'
+import {
+  deleteToken,
+  getMessaging,
+  getToken,
+  isSupported as isMessagingSupported,
+  onMessage,
+} from 'firebase/messaging'
 import { ASSISTANT_WORKER_URL, FCM_VAPID_KEY } from '../assistantConfig'
 import { db, getRawRecord, runApplyingRemote } from '../data/db'
 import { getFirebaseAuth, getFirebaseDb } from '../data/sync'
@@ -346,9 +353,37 @@ async function getReadyServiceWorkerRegistration(): Promise<ServiceWorkerRegistr
   if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) {
     throw new Error('error: Service Worker não suportado neste navegador.')
   }
-  const existing = await navigator.serviceWorker.getRegistration()
-  if (existing) return existing
+  const baseUrl = ((import.meta as any).env?.BASE_URL as string | undefined) || '/'
+
+  // Remove eventuais Service Workers órfãos de firebase-messaging-sw.js para evitar conflito de escopo em /meu-treino/
+  if (typeof navigator.serviceWorker.getRegistrations === 'function') {
+    const regs = await navigator.serviceWorker.getRegistrations().catch(() => [])
+    for (const r of regs) {
+      const scriptUrl =
+        r.active?.scriptURL || r.waiting?.scriptURL || r.installing?.scriptURL || ''
+      if (scriptUrl.includes('firebase-messaging-sw.js')) {
+        await r.unregister().catch(() => {})
+      }
+    }
+  }
+
+  let reg = await navigator.serviceWorker.getRegistration(baseUrl).catch(() => undefined)
+  if (!reg) {
+    reg = await navigator.serviceWorker.getRegistration().catch(() => undefined)
+  }
+  if (!reg) {
+    const swUrl = `${baseUrl.replace(/\/?$/, '/')}sw.js`
+    reg = await navigator.serviceWorker.register(swUrl, { scope: baseUrl })
+  }
+  if (reg.active) return reg
   return await navigator.serviceWorker.ready
+}
+
+export function getActiveVapidKeyPreview(): string {
+  const key = (FCM_VAPID_KEY ?? '').trim()
+  if (!key || key === 'COLE_SUA_CHAVE_PUBLICA_VAPID_AQUI') return 'não configurada'
+  if (key.length <= 16) return key
+  return `${key.slice(0, 8)}…${key.slice(-6)}`
 }
 
 export async function enablePushNotifications(
@@ -389,6 +424,22 @@ export async function enablePushNotifications(
   const messaging = getMessaging(app)
   const swReg = await getReadyServiceWorkerRegistration()
 
+  // Limpa qualquer PushSubscription/token anterior (ex.: gerado com chave VAPID antiga)
+  // para forçar uma nova inscrição Web Push autenticada com a FCM_VAPID_KEY atual.
+  try {
+    await deleteToken(messaging)
+  } catch {
+    // ignora caso não exista token prévio no IndexedDB
+  }
+  try {
+    const existingSub = await swReg.pushManager?.getSubscription?.()
+    if (existingSub) {
+      await existingSub.unsubscribe()
+    }
+  } catch {
+    // ignora falha ao desinscrever subscription antiga
+  }
+
   const token = await getToken(messaging, {
     vapidKey,
     serviceWorkerRegistration: swReg,
@@ -421,6 +472,25 @@ export async function enablePushNotifications(
   }
 
   await setDoc(ref, payload)
+
+  // Remove tokens antigos do mesmo usuário no Firestore para evitar que o Worker tente
+  // enviar push para tokens órfãos criados com chaves VAPID anteriores (HTTP 401 Third party auth error).
+  try {
+    const oldTokensQuery = query(collection(fs, 'fcmTokens'), where('uid', '==', user.uid), limit(25))
+    const oldSnap = await getDocs(oldTokensQuery)
+    const deletions: Promise<void>[] = []
+    oldSnap.forEach((dSnap) => {
+      if (dSnap.id !== docId) {
+        deletions.push(deleteDoc(doc(fs, 'fcmTokens', dSnap.id)).catch(() => {}))
+      }
+    })
+    if (deletions.length > 0) {
+      await Promise.all(deletions)
+    }
+  } catch {
+    // ignora se a limpeza de tokens antigos falhar
+  }
+
   safeSetLs(LS_FCM_TOKEN, token)
   safeSetLs(LS_FCM_DOC_ID, docId)
   await recordLastNotificationError(null)
