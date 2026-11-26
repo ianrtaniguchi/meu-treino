@@ -26,3 +26,8 @@ ALLOWED_ORIGINS = "https://ianrtaniguchi.github.io,http://localhost:5173"
 #   npx wrangler secret put GOOGLE_CLIENT_ID
 #   npx wrangler secret put GOOGLE_CLIENT_SECRET
 #   npx wrangler secret put GOOGLE_REFRESH_TOKEN
+# Para habilitar coleta de notícias do Ifes + envio de push (FCM HTTP v1 + Firestore), defina:
+#   npx wrangler secret put FCM_SERVICE_ACCOUNT
+
+[triggers]
+crons = ["*/20 * * * *"]

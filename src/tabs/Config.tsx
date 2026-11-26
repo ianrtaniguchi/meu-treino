@@ -21,6 +21,23 @@ import {
   saveLockSetup,
   setLockTimeoutMinutes,
 } from '../lib/lock'
+import {
+  enablePushNotifications,
+  fetchIfesWorkerStatus,
+  formatKeywordsInput,
+  getNotificationDiagnosticsLocal,
+  getNotificationPermissionLabel,
+  getSavedLocalFcmToken,
+  isIosSafariNotInstalled,
+  isStandalonePwa,
+  loadUserFcmTokenDoc,
+  parseKeywordsInput,
+  recordLastNotificationError,
+  triggerPushTest,
+  updateUserFcmSettings,
+  type FcmTokenDoc,
+  type IfesWorkerStatus,
+} from '../lib/notifications'
 
 const fmtDateTime = (t: number | string) => new Date(t).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })
 const mb = (n?: number) => (n === undefined ? '—' : `${(n / 1024 / 1024).toFixed(2)} MB`)
@@ -65,6 +82,163 @@ export default function Config() {
   const [pin2, setPin2] = useState('')
   const [lockBusy, setLockBusy] = useState(false)
   const [lockErr, setLockErr] = useState('')
+
+  // Estado de notificações push (Notícias do Ifes – Campus Vitória)
+  const notifDiagLocal = useLiveQuery(
+    () => getNotificationDiagnosticsLocal(),
+    [],
+    { lastNotificationAt: null, lastError: null },
+  )
+  const [fcmDoc, setFcmDoc] = useState<FcmTokenDoc | null>(null)
+  const [keywordsText, setKeywordsText] = useState('')
+  const [notifBusy, setNotifBusy] = useState(false)
+  const [notifMsg, setNotifMsg] = useState('')
+  const [notifErr, setNotifErr] = useState('')
+  const [permissionLabel, setPermissionLabel] = useState(() => getNotificationPermissionLabel())
+  const [standalonePwa, setStandalonePwa] = useState(() => isStandalonePwa())
+  const [iosNotInstalled, setIosNotInstalled] = useState(() => isIosSafariNotInstalled())
+  const [workerIfesStatus, setWorkerIfesStatus] = useState<IfesWorkerStatus | null>(null)
+
+  useEffect(() => {
+    setPermissionLabel(getNotificationPermissionLabel())
+    setStandalonePwa(isStandalonePwa())
+    setIosNotInstalled(isIosSafariNotInstalled())
+    if (!syncStatus.user?.uid) {
+      setFcmDoc(null)
+      return
+    }
+    let cancelled = false
+    ;(async () => {
+      const docSnap = await loadUserFcmTokenDoc(syncStatus.user!.uid)
+      if (cancelled) return
+      setFcmDoc(docSnap)
+      if (docSnap) {
+        setKeywordsText(formatKeywordsInput(docSnap.keywords))
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [syncStatus.user?.uid])
+
+  const handleEnableNotifications = async () => {
+    setNotifErr('')
+    setNotifMsg('')
+    setNotifBusy(true)
+    try {
+      const saved = await enablePushNotifications(keywordsText)
+      setPermissionLabel(getNotificationPermissionLabel())
+      setFcmDoc(saved)
+      setKeywordsText(formatKeywordsInput(saved.keywords))
+      setNotifMsg('Token FCM registrado e notificações ativadas.')
+      toast('Notificações ativadas')
+    } catch (e) {
+      setPermissionLabel(getNotificationPermissionLabel())
+      const msg = (e as Error)?.message || 'error: falha ao ativar notificações.'
+      setNotifErr(msg)
+      await recordLastNotificationError(msg)
+    } finally {
+      setNotifBusy(false)
+    }
+  }
+
+  const handleToggleFcmEnabled = async () => {
+    if (!syncStatus.user) {
+      setNotifErr('error: faça login primeiro.')
+      return
+    }
+    if (!fcmDoc) {
+      await handleEnableNotifications()
+      return
+    }
+    setNotifErr('')
+    setNotifMsg('')
+    setNotifBusy(true)
+    try {
+      const nextEnabled = !fcmDoc.enabled
+      const updated = await updateUserFcmSettings(syncStatus.user.uid, {
+        enabled: nextEnabled,
+      })
+      if (updated) setFcmDoc(updated)
+      toast(nextEnabled ? 'Notificações ligadas' : 'Notificações desligadas')
+    } catch (e) {
+      const msg = (e as Error)?.message || 'error: falha ao alterar estado das notificações.'
+      setNotifErr(msg)
+      await recordLastNotificationError(msg)
+    } finally {
+      setNotifBusy(false)
+    }
+  }
+
+  const handleSaveKeywords = async () => {
+    if (!syncStatus.user) {
+      setNotifErr('error: faça login primeiro.')
+      return
+    }
+    setNotifErr('')
+    setNotifMsg('')
+    setNotifBusy(true)
+    try {
+      const parsed = parseKeywordsInput(keywordsText)
+      const updated = await updateUserFcmSettings(syncStatus.user.uid, {
+        keywords: parsed,
+      })
+      if (updated) {
+        setFcmDoc(updated)
+        setKeywordsText(formatKeywordsInput(updated.keywords))
+      }
+      setNotifMsg(
+        parsed.length > 0
+          ? `Filtro salvo: ${parsed.join(', ')}`
+          : 'Filtro limpo (você receberá todas as notícias do Campus Vitória).',
+      )
+      toast('Filtro de palavras-chave salvo')
+    } catch (e) {
+      const msg = (e as Error)?.message || 'error: falha ao salvar palavras-chave.'
+      setNotifErr(msg)
+      await recordLastNotificationError(msg)
+    } finally {
+      setNotifBusy(false)
+    }
+  }
+
+  const handleSendPushTest = async () => {
+    setNotifErr('')
+    setNotifMsg('')
+    setNotifBusy(true)
+    try {
+      const res = await triggerPushTest()
+      if (res.totalTokens === 0) {
+        const msg = res.message || 'Nenhum token ativo encontrado. Toque em "$ ativar notificações" primeiro.'
+        setNotifErr(msg)
+      } else {
+        const summary = res.results
+          .map((r) => `${r.tokenPreview}: ${r.ok ? 'OK' : `ERRO (${r.reason})`}`)
+          .join(' · ')
+        setNotifMsg(`Enviadas: ${res.sent}/${res.totalTokens} (${summary})`)
+        toast(res.sent > 0 ? 'Notificação de teste enviada' : 'Falha no envio do teste')
+      }
+    } catch (e) {
+      const msg = (e as Error)?.message || 'error: falha ao enviar notificação de teste.'
+      setNotifErr(msg)
+    } finally {
+      setNotifBusy(false)
+    }
+  }
+
+  const handleCheckIfesWorkerStatus = async () => {
+    setNotifErr('')
+    setNotifBusy(true)
+    try {
+      const st = await fetchIfesWorkerStatus()
+      setWorkerIfesStatus(st)
+    } catch (e) {
+      const msg = (e as Error)?.message || 'error: falha ao consultar status do Worker.'
+      setNotifErr(msg)
+    } finally {
+      setNotifBusy(false)
+    }
+  }
 
   const refreshStorage = async () => {
     setPersisted((await navigator.storage?.persisted?.()) ?? false)
@@ -357,6 +531,147 @@ export default function Config() {
         <p className="muted small" style={{ margin: 0 }}>
           A credencial biométrica e o hash do PIN ficam apenas neste aparelho (não vão para o Firestore nem para o backup).
         </p>
+      </div>
+
+      <h2>notificações</h2>
+      <div className="card stack">
+        {iosNotInstalled && (
+          <div className="banner" style={{ cursor: 'default', marginBottom: 4 }}>
+            no iPhone, instale o app na tela de início para receber notificações
+          </div>
+        )}
+
+        <div className="row between">
+          <div className="grow">
+            notícias do Ifes · Campus Vitória
+            <div className="muted small">
+              {fcmDoc
+                ? fcmDoc.enabled
+                  ? 'ativas neste aparelho (Web Push / FCM)'
+                  : 'pausadas (desligadas)'
+                : 'não ativadas neste aparelho'}
+            </div>
+          </div>
+          <button
+            className={fcmDoc?.enabled ? '' : 'primary'}
+            disabled={notifBusy}
+            onClick={() => void handleToggleFcmEnabled()}
+          >
+            {fcmDoc ? (fcmDoc.enabled ? 'desligar' : 'ligar') : '$ ligar'}
+          </button>
+        </div>
+
+        <button
+          className="primary block"
+          disabled={notifBusy}
+          onClick={() => void handleEnableNotifications()}
+        >
+          {notifBusy ? 'aguarde…' : '$ ativar notificações'}
+        </button>
+
+        <Field
+          label="palavras-chave (separadas por vírgula; vazio = tudo)"
+          type="text"
+          mode="text"
+          value={keywordsText}
+          onChange={setKeywordsText}
+          placeholder="ex.: edital, bolsa, estágio, mestrado"
+        />
+        <div className="grid2">
+          <button
+            className="small"
+            disabled={notifBusy || !fcmDoc}
+            onClick={() => void handleSaveKeywords()}
+          >
+            $ salvar filtro
+          </button>
+          <button
+            className="small"
+            disabled={notifBusy || !syncStatus.user}
+            onClick={() => void handleSendPushTest()}
+          >
+            $ enviar notificação de teste
+          </button>
+        </div>
+
+        {notifMsg && <div className="small green">{notifMsg}</div>}
+        {notifErr && <div className="small red">{notifErr}</div>}
+
+        <div className="stack" style={{ borderTop: '1px solid var(--border)', paddingTop: 8, marginTop: 4 }}>
+          <div className="muted small"><b>diagnóstico de push</b></div>
+          <div className="row between small">
+            <span className="muted">permissão</span>
+            <b
+              className={
+                permissionLabel === 'concedida'
+                  ? 'green'
+                  : permissionLabel === 'negada'
+                    ? 'red'
+                    : 'amber'
+              }
+            >
+              {permissionLabel}
+            </b>
+          </div>
+          <div className="row between small">
+            <span className="muted">instalado como PWA (standalone)</span>
+            <b className={standalonePwa ? 'green' : 'amber'}>
+              {standalonePwa ? 'sim (display-mode: standalone)' : 'não (navegador)'}
+            </b>
+          </div>
+          <div className="row between small">
+            <span className="muted">token registrado</span>
+            <b className={fcmDoc || getSavedLocalFcmToken() ? 'green' : 'amber'}>
+              {fcmDoc
+                ? `sim (${fcmDoc.token.slice(0, 12)}…)`
+                : getSavedLocalFcmToken()
+                  ? `local (${getSavedLocalFcmToken()!.slice(0, 12)}…)`
+                  : 'não'}
+            </b>
+          </div>
+          <div className="row between small">
+            <span className="muted">última notificação recebida</span>
+            <b>
+              {notifDiagLocal.lastNotificationAt
+                ? fmtDateTime(notifDiagLocal.lastNotificationAt)
+                : 'nenhuma ainda'}
+            </b>
+          </div>
+          <div className="row between small">
+            <span className="muted">último erro</span>
+            <b className={notifDiagLocal.lastError || notifErr ? 'red' : 'muted'}>
+              {notifErr || notifDiagLocal.lastError || 'nenhum'}
+            </b>
+          </div>
+
+          {workerIfesStatus && (
+            <>
+              <div className="row between small">
+                <span className="muted">última coleta do Worker</span>
+                <b>{workerIfesStatus.lastRunAt ? fmtDateTime(workerIfesStatus.lastRunAt) : 'nunca'}</b>
+              </div>
+              <div className="row between small">
+                <span className="muted">notícias no Firestore</span>
+                <b>{workerIfesStatus.totalNoticias}</b>
+              </div>
+              {(workerIfesStatus.alert || workerIfesStatus.lastError) && (
+                <div className="small red">
+                  {workerIfesStatus.alert ?? workerIfesStatus.lastError}
+                </div>
+              )}
+            </>
+          )}
+
+          {syncStatus.user && (
+            <button
+              className="small ghost"
+              disabled={notifBusy}
+              onClick={() => void handleCheckIfesWorkerStatus()}
+            >
+              $ consultar status do coletor (/ifes/status)
+            </button>
+          )}
+        </div>
       </div>
 
       <h2>backup</h2>

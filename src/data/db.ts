@@ -6,7 +6,7 @@ export const DB_NAME = 'meu-treino'
 export const DB_VERSION = 3
 
 /** Configurações que fazem sentido sincronizar entre aparelhos (nunca PIN/Face ID/estado efêmero). */
-export const SYNCABLE_SETTINGS = new Set(['goals', 'restSeconds', 'streakGap'])
+export const SYNCABLE_SETTINGS = new Set(['goals', 'restSeconds', 'streakGap', 'ifesReadIds'])
 
 export const pkOf = (table: TableName) => (table === 'settings' ? 'key' : 'id')
 export const recordDocId = (table: TableName, pk: string) => `${table}:${pk}`

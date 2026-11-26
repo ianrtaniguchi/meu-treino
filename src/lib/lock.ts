@@ -13,6 +13,8 @@ export const LOCK_SETTING_KEYS = new Set([
   'lockLastUnlockedAt',
   'lockHiddenAt',
   'assistantHistory',
+  'fcmLastNotificationAt',
+  'fcmLastError',
 ])
 
 /** Padrão ao ativar a tranca: 0 minutos = "sempre ao abrir" (0 segundos). */

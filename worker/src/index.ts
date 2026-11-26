@@ -1,3 +1,10 @@
+import {
+  getIfesStatusReport,
+  resetIfesCachesForTest,
+  runIfesCron,
+  sendTestPushToUserTokens,
+} from './ifes'
+
 export interface RateLimiterBinding {
   limit(options: { key: string }): Promise<{ success: boolean }>
 }
@@ -34,6 +41,8 @@ export interface Env {
   GOOGLE_CLIENT_ID?: string
   GOOGLE_CLIENT_SECRET?: string
   GOOGLE_REFRESH_TOKEN?: string
+  /** JSON completo da Service Account do Firebase (usado no cron de notícias do Ifes e no envio de Web Push via FCM HTTP v1) */
+  FCM_SERVICE_ACCOUNT?: string
 }
 
 export const GOOGLE_JWKS_URL =
@@ -97,6 +106,7 @@ export function resetWorkerCachesForTest() {
   firestoreKeyCache.clear()
   memoryRateBuckets.clear()
   googleAccessTokenCache = null
+  resetIfesCachesForTest()
 }
 
 // ---------- Validação e busca da chave do Groq no Firestore (REST) ----------
@@ -376,7 +386,7 @@ function getAllowedOrigins(env: Env): Set<string> {
 function buildCorsHeaders(origin: string): Record<string, string> {
   return {
     'Access-Control-Allow-Origin': origin,
-    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
     'Access-Control-Allow-Headers': 'Authorization, Content-Type',
     'Access-Control-Max-Age': '86400',
     Vary: 'Origin',
@@ -1079,11 +1089,17 @@ export async function handleRequest(
   }
 
   const isAnalyzeMeal = url.pathname === '/analyze-meal'
-  if (url.pathname !== '/chat' && !isAnalyzeMeal) {
+  const isIfesStatus = url.pathname === '/ifes/status'
+  const isPushTest = url.pathname === '/push-test'
+  if (url.pathname !== '/chat' && !isAnalyzeMeal && !isIfesStatus && !isPushTest) {
     return jsonResponse(404, { error: 'error: rota não encontrada.' }, origin)
   }
 
-  if (request.method !== 'POST') {
+  if (isIfesStatus) {
+    if (request.method !== 'GET') {
+      return jsonResponse(405, { error: 'error: método não permitido (use GET).' }, origin)
+    }
+  } else if (request.method !== 'POST') {
     return jsonResponse(405, { error: 'error: método não permitido (use POST).' }, origin)
   }
 
@@ -1121,6 +1137,24 @@ export async function handleRequest(
       { error: 'error: limite de requisições por minuto atingido. Aguarde um instante.' },
       origin,
     )
+  }
+
+  if (isIfesStatus) {
+    try {
+      const report = await getIfesStatusReport(env, { fetcher, nowMs })
+      return jsonResponse(200, report, origin)
+    } catch (e) {
+      return jsonResponse(503, { error: `error: ${(e as Error).message}` }, origin)
+    }
+  }
+
+  if (isPushTest) {
+    try {
+      const result = await sendTestPushToUserTokens(jwtPayload.sub, env, { fetcher, nowMs })
+      return jsonResponse(200, result, origin)
+    } catch (e) {
+      return jsonResponse(503, { error: `error: ${(e as Error).message}` }, origin)
+    }
   }
 
   // Limite de 64 KB para o corpo do chat (a foto do prato tem um limite próprio, maior)
@@ -1247,5 +1281,19 @@ export async function handleRequest(
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     return handleRequest(request, env)
+  },
+  async scheduled(
+    _event: unknown,
+    env: Env,
+    ctx?: { waitUntil?: (promise: Promise<unknown>) => void },
+  ): Promise<void> {
+    const task = runIfesCron(env).catch((err) => {
+      console.error('[ifes-cron] erro não tratado:', err)
+    })
+    if (ctx && typeof ctx.waitUntil === 'function') {
+      ctx.waitUntil(task)
+    } else {
+      await task
+    }
   },
 }

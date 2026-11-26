@@ -90,6 +90,20 @@ button, input, select, textarea { font-family: var(--mono); font-variant-numeric
 }
 .tabbar button svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
 .tabbar button.on { color: var(--green); box-shadow: var(--glow); }
+.tabbar-icon-wrap { position: relative; display: inline-flex; align-items: center; justify-content: center; }
+.tab-badge {
+  position: absolute; top: -5px; right: -10px;
+  min-width: 16px; height: 16px; padding: 0 4px;
+  border-radius: 999px; background: var(--green); color: #04140a;
+  font-size: 10px; font-weight: 700; line-height: 16px; text-align: center;
+  box-shadow: 0 0 6px rgba(57, 211, 83, 0.45);
+}
+.news-link-btn {
+  display: inline-flex; align-items: center; gap: 4px;
+  min-height: 36px; padding: 6px 12px; border-radius: var(--radius-sm);
+  border: 1px solid var(--green); background: rgba(57, 211, 83, 0.12);
+  color: var(--green); font-size: 12px; font-weight: 600; text-decoration: none;
+}
 
 h1 { font-size: 20px; font-weight: 700; margin: 2px 0 10px; letter-spacing: -.02em; }
 h2 { font-size: 12px; font-weight: 600; margin: 22px 0 8px; color: var(--muted); text-transform: lowercase; letter-spacing: .02em; }

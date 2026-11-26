@@ -1,21 +1,119 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users/{uid}
+    //   - groqApiKey: string (edited only via Firebase Console; read by Worker via REST)
+    //
+    // Subcollection: users/{uid}/records/{id}
+    //   - id: string
+    //   - table: string
+    //   - pk: string
+    //   - updatedAt: number
+    //   - deleted: bool
+    //   - payload: map
+    //
+    // Collection: ifesNoticias/{docId}
+    //   - title: string
+    //   - summary: string
+    //   - publishedAt: string (ISO 8601)
+    //   - url: string
+    //   - campus: string
+    //   - createdAt: string (ISO 8601)
+    //   (Written only by Cloudflare Worker via Firebase Service Account)
+    //
+    // Collection: fcmTokens/{tokenId}
+    //   - token: string (required, 1..4096 chars)
+    //   - uid: string (required, must match request.auth.uid)
+    //   - enabled: bool (required)
+    //   - keywords: list (required, max 50 items)
+    //   - createdAt: string (optional, max 64 chars)
+    //   - updatedAt: string (optional, max 64 chars)
+    //   - userAgent: string (optional, max 1024 chars)
+    //
+    // Collection: meta/{docId}
+    //   - lastRunAt: string
+    //   - lastNewestId: string
+    //   - consecutiveZeroRuns: int
+    //   - lastError: string | null
+    //   - alert: string | null
+    //   (Written only by Cloudflare Worker via Firebase Service Account)
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner() {
+      return isAuthenticated() && (
+        request.auth.uid == 'tH4A7sYnH1WDUdBVDd1mfltMPdj2' ||
+        request.auth.uid == '[SEU_UID]'
+      );
+    }
+
+    function isUserOwner(uid) {
+      return isOwner() && request.auth.uid == uid;
+    }
+
+    function isValidFcmToken(data) {
+      return data.keys().hasAll(['uid', 'token', 'enabled', 'keywords']) &&
+             data.keys().hasOnly(['uid', 'token', 'enabled', 'keywords', 'createdAt', 'updatedAt', 'userAgent']) &&
+             data.uid == request.auth.uid &&
+             data.token is string && data.token.size() > 0 && data.token.size() <= 4096 &&
+             data.enabled is bool &&
+             data.keywords is list && data.keywords.size() <= 50 &&
+             (!('createdAt' in data) || (data.createdAt is string && data.createdAt.size() <= 64)) &&
+             (!('updatedAt' in data) || (data.updatedAt is string && data.updatedAt.size() <= 64)) &&
+             (!('userAgent' in data) || (data.userAgent is string && data.userAgent.size() <= 1024));
+    }
+
     // Documento raiz do usuário (guarda groqApiKey editada apenas pelo console do Firebase).
     // Leitura permitida apenas ao próprio UID autorizado (usado pelo Cloudflare Worker via REST);
     // escrita bloqueada para clientes (allow write: if false).
     match /users/{uid} {
-      allow read: if request.auth != null && request.auth.uid == uid && uid == '[SEU_UID]';
+      allow read: if isUserOwner(uid);
       allow write: if false;
 
       // Subcoleções de sincronização do app (ex.: records/{id})
       match /records/{id} {
-        allow read, write: if request.auth != null && request.auth.uid == uid && uid == '[SEU_UID]';
+        allow read, write: if isUserOwner(uid);
       }
 
       match /{subcollection}/{docId=**} {
-        allow read, write: if request.auth != null && request.auth.uid == uid && uid == '[SEU_UID]';
+        allow read, write: if isUserOwner(uid);
       }
+    }
+
+    // Notícias do Ifes Campus Vitória: leitura apenas para o usuário autenticado autorizado;
+    // escrita realizada exclusivamente pelo Cloudflare Worker via Service Account.
+    match /ifesNoticias/{docId} {
+      allow read: if isOwner();
+      allow write: if false;
+    }
+
+    // Tokens FCM para Web Push: leitura e escrita restritas ao próprio UID autorizado.
+    match /fcmTokens/{tokenId} {
+      allow get: if isOwner() && (resource == null || resource.data.uid == request.auth.uid);
+      allow list: if isOwner() && resource.data.uid == request.auth.uid;
+      allow create: if isOwner() && isValidFcmToken(request.resource.data);
+      allow update: if isOwner() &&
+                    resource.data.uid == request.auth.uid &&
+                    request.resource.data.uid == resource.data.uid &&
+                    isValidFcmToken(request.resource.data);
+      allow delete: if isOwner() && resource.data.uid == request.auth.uid;
+    }
+
+    // Metadados e status do coletor (ex.: meta/ifesNoticias): leitura apenas para o dono;
+    // escrita realizada exclusivamente pelo Cloudflare Worker via Service Account.
+    match /meta/{docId} {
+      allow read: if isOwner();
+      allow write: if false;
     }
   }
 }

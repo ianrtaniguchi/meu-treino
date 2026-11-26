@@ -13,7 +13,7 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['apple-touch-icon.png', 'favicon.png'],
+      includeAssets: ['apple-touch-icon.png', 'favicon.png', 'push-sw.js'],
       manifest: {
         name: 'Meu Treino',
         short_name: 'Meu Treino',
@@ -33,6 +33,8 @@ export default defineConfig({
       },
       workbox: {
         globPatterns: ['**/*.{js,css,html,png,svg,ico,webmanifest}'],
+        globIgnores: ['**/push-sw.js'],
+        importScripts: ['push-sw.js'],
         navigateFallback: `${base}index.html`,
         cleanupOutdatedCaches: true,
       },

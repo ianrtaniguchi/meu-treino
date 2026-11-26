@@ -6,3 +6,12 @@
  */
 export const ASSISTANT_WORKER_URL =
   "https://meu-treino-assistant.iantreino.workers.dev";
+
+/**
+ * Chave pública VAPID do Firebase Cloud Messaging (Web Push).
+ * Gere no Console do Firebase → Configurações do projeto → Cloud Messaging → Certificados de envio por push da Web.
+ * É uma chave pública (seguro ficar no cliente); também pode ser definida via VITE_FCM_VAPID_KEY.
+ */
+export const FCM_VAPID_KEY: string =
+  (import.meta as any).env?.VITE_FCM_VAPID_KEY ??
+  "BOvaDVe4TLZrohHNl602cefC9xoLxaXFS6gbvYNgqt6Awj01BtF38UHDy4Cme8Rdty-KhHmbzoJA6zdwkGNGeZ4";
