@@ -68,14 +68,14 @@ describe('Ceturb-ES Service & Worker Proxy', () => {
       { time: '18:45', minutesFromMidnight: 1125, noteCode: null },
     ]
 
-    const morning = new Date('2026-08-12T10:15:00-03:00')
+    const morning = new Date(2026, 7, 12, 10, 15, 0)
     const nextMorning = findNextDeparture(slots, morning)
     expect(nextMorning?.slot.time).toBe('12:30')
     expect(nextMorning?.index).toBe(1)
     expect(nextMorning?.minutesUntil).toBe(135)
     expect(nextMorning?.isTomorrow).toBe(false)
 
-    const lateNight = new Date('2026-08-12T22:00:00-03:00')
+    const lateNight = new Date(2026, 7, 12, 22, 0, 0)
     const nextTomorrow = findNextDeparture(slots, lateNight)
     expect(nextTomorrow?.slot.time).toBe('06:00')
     expect(nextTomorrow?.index).toBe(0)
@@ -83,9 +83,9 @@ describe('Ceturb-ES Service & Worker Proxy', () => {
   })
 
   it('identifica automaticamente a aba do dia (Dias Úteis, Sábados, Domingos)', () => {
-    expect(getActiveDayTabForDate(new Date('2026-08-12T12:00:00-03:00'))).toBe('uteis') // Quarta
-    expect(getActiveDayTabForDate(new Date('2026-08-15T12:00:00-03:00'))).toBe('sabado') // Sábado
-    expect(getActiveDayTabForDate(new Date('2026-08-16T12:00:00-03:00'))).toBe('domingo') // Domingo
+    expect(getActiveDayTabForDate(new Date(2026, 7, 12, 12, 0, 0))).toBe('uteis') // Quarta
+    expect(getActiveDayTabForDate(new Date(2026, 7, 15, 12, 0, 0))).toBe('sabado') // Sábado
+    expect(getActiveDayTabForDate(new Date(2026, 7, 16, 12, 0, 0))).toBe('domingo') // Domingo
   })
 
   it('filtra linhas por número, nome de terminal e atalhos como "Ifes"', async () => {
