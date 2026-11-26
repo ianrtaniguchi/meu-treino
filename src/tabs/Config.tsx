@@ -22,6 +22,10 @@ import {
   setLockTimeoutMinutes,
 } from '../lib/lock'
 import {
+  THEME_OPTIONS,
+  useTheme,
+} from '../lib/theme'
+import {
   cancelUserPushReminder,
   enablePushNotifications,
   fetchIfesWorkerStatus,
@@ -61,6 +65,7 @@ function authErrorMsg(err: unknown): string {
 
 export default function Config() {
   const { toast, confirm } = useUi()
+  const [theme, setTheme] = useTheme()
   const lastBackup = useSetting<number | null>('lastBackupAt', null)
   const lastSyncAt = useSetting<number | null>('lastSyncAt', null)
   const pendingOutbox = useLiveQuery(() => db.outbox.count(), [], 0)
@@ -423,6 +428,41 @@ export default function Config() {
     <>
       <PromptTitle path="~/config" />
 
+      <h2>aparência e tema</h2>
+      <div className="card stack">
+        <div className="row between">
+          <span className="muted small">tema do aplicativo</span>
+          <b className="green">{THEME_OPTIONS.find((t) => t.id === theme)?.label ?? theme}</b>
+        </div>
+        <div className="theme-grid" role="radiogroup" aria-label="Tema do aplicativo">
+          {THEME_OPTIONS.map((opt) => {
+            const active = theme === opt.id
+            return (
+              <button
+                key={opt.id}
+                type="button"
+                role="radio"
+                aria-checked={active}
+                className={`theme-card${active ? ' on' : ''}`}
+                onClick={() => {
+                  setTheme(opt.id)
+                  toast(`Tema ${opt.label} ativado`)
+                }}
+              >
+                <span className="theme-swatches" aria-hidden="true">
+                  <span className="theme-swatch" style={{ background: opt.bgPreview }} />
+                  <span className="theme-swatch" style={{ background: opt.accentPreview }} />
+                </span>
+                <b>{opt.label}</b>
+                <span className="muted" style={{ fontSize: 10, lineHeight: 1.2 }}>
+                  {opt.subtitle}
+                </span>
+              </button>
+            )
+          })}
+        </div>
+      </div>
+
       <h2>sincronização em nuvem</h2>
       {syncStatus.user ? (
         <div className="card stack">
@@ -441,7 +481,7 @@ export default function Config() {
           {syncStatus.error && <div className="small red">{syncStatus.error}</div>}
           <div className="grid2">
             <button className="primary" disabled={syncStatus.syncing} onClick={() => void doSyncNow()}>
-              {syncStatus.syncing ? 'sincronizando…' : '$ sincronizar agora'}
+              {syncStatus.syncing ? 'sincronizando…' : 'sincronizar agora'}
             </button>
             <button onClick={() => void doSignOut()}>sair</button>
           </div>
@@ -465,8 +505,8 @@ export default function Config() {
             {authBusy
               ? 'aguarde…'
               : authMode === 'login'
-                ? '$ entrar'
-                : '$ enviar link de redefinição'}
+                ? 'entrar'
+                : 'enviar link de redefinição'}
           </button>
           <p className="muted small" style={{ margin: 0 }}>
             Modo offline-first: você pode usar o app sem conta; entre quando quiser sincronizar com a nuvem ({pendingOutbox} pendente(s) na fila local).
@@ -487,7 +527,7 @@ export default function Config() {
             className={lockConfig?.enabled ? '' : 'primary'}
             onClick={() => void handleToggleLock()}
           >
-            {lockConfig?.enabled ? 'desativar' : '$ ativar'}
+            {lockConfig?.enabled ? 'desativar' : 'ativar'}
           </button>
         </div>
 
@@ -583,7 +623,7 @@ export default function Config() {
             disabled={notifBusy}
             onClick={() => void handleToggleFcmEnabled()}
           >
-            {fcmDoc ? (fcmDoc.enabled ? 'desligar' : 'ligar') : '$ ligar'}
+            {fcmDoc ? (fcmDoc.enabled ? 'desligar' : 'ligar') : 'ligar'}
           </button>
         </div>
 
@@ -592,7 +632,7 @@ export default function Config() {
           disabled={notifBusy}
           onClick={() => void handleEnableNotifications()}
         >
-          {notifBusy ? 'aguarde…' : '$ ativar notificações'}
+          {notifBusy ? 'aguarde…' : 'ativar notificações'}
         </button>
 
         <Field
@@ -609,14 +649,14 @@ export default function Config() {
             disabled={notifBusy || !fcmDoc}
             onClick={() => void handleSaveKeywords()}
           >
-            $ salvar filtro
+            salvar filtro
           </button>
           <button
             className="small"
             disabled={notifBusy || !syncStatus.user}
             onClick={() => void handleSendPushTest()}
           >
-            $ enviar notificação de teste
+            enviar notificação de teste
           </button>
         </div>
 
@@ -698,7 +738,7 @@ export default function Config() {
               disabled={notifBusy}
               onClick={() => void handleCheckIfesWorkerStatus()}
             >
-              $ consultar status do coletor (/ifes/status)
+              consultar status do coletor (/ifes/status)
             </button>
           )}
         </div>
@@ -735,7 +775,7 @@ export default function Config() {
                   className="small danger"
                   onClick={() => void handleCancelPushReminder(rem)}
                 >
-                  $ cancelar
+                  cancelar
                 </button>
               </div>
             ))
@@ -748,8 +788,8 @@ export default function Config() {
         <div className="muted small">último backup exportado</div>
         <div className={backupAge === null || backupAge > 7 ? 'big amber' : 'big green'}>{lastBackup ? fmtDateTime(lastBackup) : 'nunca'}</div>
         {backupAge !== null && <div className="muted small">há {backupAge} dia(s)</div>}
-        <button className="primary block" disabled={busy} onClick={doExport}>$ exportar backup (json)</button>
-        <button className="block" disabled={busy} onClick={() => fileRef.current?.click()}>$ importar backup…</button>
+        <button className="primary block" disabled={busy} onClick={doExport}>exportar backup (json)</button>
+        <button className="block" disabled={busy} onClick={() => fileRef.current?.click()}>importar backup…</button>
         <input ref={fileRef} type="file" accept="application/json,.json" hidden onChange={(e) => void onFile(e.target.files?.[0])} />
         {error && <div style={{ color: 'var(--red)' }}>{error}</div>}
       </div>
@@ -853,7 +893,7 @@ export default function Config() {
               disabled={lockBusy}
               onClick={() => void confirmEnableLock()}
             >
-              {lockBusy ? 'aguardando Face ID…' : '$ registrar Face ID e ativar'}
+              {lockBusy ? 'aguardando Face ID…' : 'registrar Face ID e ativar'}
             </button>
           </div>
         </Sheet>

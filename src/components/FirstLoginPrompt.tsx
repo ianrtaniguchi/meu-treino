@@ -40,7 +40,7 @@ export default function FirstLoginPrompt({ preview, syncing }: { preview: FirstL
         </div>
 
         <button className="primary block" disabled={syncing} onClick={() => void handle(true)}>
-          $ enviar dados locais para a nuvem (mesclar)
+          enviar dados locais para a nuvem (mesclar)
         </button>
         <button className="block" disabled={syncing} onClick={() => void handle(false)}>
           usar apenas dados da nuvem neste aparelho

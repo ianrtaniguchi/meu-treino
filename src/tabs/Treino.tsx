@@ -98,9 +98,9 @@ function Painel() {
       </div>
 
       {hasActive ? (
-        <button className="primary block" style={{ minHeight: 52 }} onClick={() => setFocus(true)}>$ continuar treino ({active!.name.toLowerCase()})</button>
+        <button className="primary block" style={{ minHeight: 52 }} onClick={() => setFocus(true)}>continuar treino ({active!.name.toLowerCase()})</button>
       ) : (
-        <button className="primary block" style={{ minHeight: 52 }} onClick={() => start()}>$ iniciar treino</button>
+        <button className="primary block" style={{ minHeight: 52 }} onClick={() => start()}>iniciar treino</button>
       )}
 
       {!hasActive && routines.length > 0 && (
@@ -108,7 +108,7 @@ function Painel() {
           <h2>rotinas</h2>
           {routines.map((r) => (
             <button key={r.id} className="block" style={{ marginBottom: 6, textAlign: 'left' }} onClick={() => start(r)}>
-              $ ./{r.name.toLowerCase().replace(/\s+/g, '-')} <span className="muted">({r.exerciseIds.length} ex)</span>
+              ./{r.name.toLowerCase().replace(/\s+/g, '-')} <span className="muted">({r.exerciseIds.length} ex)</span>
             </button>
           ))}
         </>
@@ -146,7 +146,7 @@ function Historico() {
 
   return (
     <>
-      <div className="row between">
+      <div className="date-nav">
         <button onClick={() => shift(-1)} aria-label="mês anterior">‹</button>
         <b>{month}</b>
         <button onClick={() => shift(1)} aria-label="próximo mês">›</button>

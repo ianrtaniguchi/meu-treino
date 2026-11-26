@@ -264,7 +264,7 @@ export default function Assistente() {
         <PromptTitle path="~/assistente" />
         {history.length > 0 && (
           <button className="small" disabled={busy} onClick={() => void handleClear()}>
-            $ limpar
+            limpar
           </button>
         )}
       </div>
@@ -296,7 +296,7 @@ export default function Assistente() {
           {QUICK_PROMPTS.map((q) => (
             <button
               key={q}
-              className="small"
+              className="small ai"
               disabled={!canUse || busy}
               onClick={() => void handleSend(q)}
             >
@@ -415,13 +415,13 @@ export default function Assistente() {
                 className="primary small"
                 onClick={() => void handleStopAndTranscribe(true)}
               >
-                $ transcrever e enviar
+                transcrever e enviar
               </button>
               <button
-                className="small"
+                className="ai small"
                 onClick={() => void handleStopAndTranscribe(false)}
               >
-                $ só transcrever
+                só transcrever
               </button>
             </div>
             <button className="small danger block" onClick={handleCancelVoice}>
@@ -446,14 +446,15 @@ export default function Assistente() {
               disabled={!canUse || busy || !input.trim()}
               onClick={() => void handleSend()}
             >
-              {busy ? 'consultando assistente…' : '$ enviar'}
+              {busy ? 'consultando assistente…' : 'enviar'}
             </button>
             <button
+              className="ai"
               disabled={!canUse || busy}
               onClick={() => void handleStartVoice()}
               aria-label="gravar áudio por voz"
             >
-              $ gravar voz
+              gravar voz
             </button>
           </div>
         )}
@@ -556,7 +557,7 @@ function DraftCard({
       {isPending && (
         <div className="grid2">
           <button className="primary small" onClick={onConfirm}>
-            $ confirmar e salvar
+            confirmar e salvar
           </button>
           <button className="small" onClick={onDiscard}>
             descartar
@@ -711,7 +712,7 @@ function PushReminderCard({
       {reminder.body && <div className="muted">{reminder.body}</div>}
       {isPending && (
         <button className="small danger" onClick={onCancel}>
-          $ cancelar lembrete
+          cancelar lembrete
         </button>
       )}
     </div>

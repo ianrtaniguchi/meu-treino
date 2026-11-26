@@ -151,14 +151,14 @@ export default function Noticias({
             disabled={refreshing || !syncStatus.user}
             onClick={() => void handleRefresh()}
           >
-            {refreshing ? 'atualizando…' : '$ atualizar'}
+            {refreshing ? 'atualizando…' : 'atualizar'}
           </button>
           {unreadCount > 0 && (
             <button
               className="small"
               onClick={() => void markAllIfesNewsRead(items.map((x) => x.id))}
             >
-              $ marcar todas como lidas
+              marcar todas como lidas
             </button>
           )}
         </div>
@@ -185,7 +185,7 @@ export default function Noticias({
             Verifique sua conexão ou se as regras do Firestore (`ifesNoticias`) já foram publicadas.
           </div>
           <button className="small" onClick={() => void handleRefresh()}>
-            $ tentar novamente
+            tentar novamente
           </button>
         </div>
       )}
@@ -246,7 +246,7 @@ export default function Noticias({
                   className="news-link-btn"
                   onClick={() => handleOpenOriginal(item)}
                 >
-                  $ abrir matéria original ↗
+                  abrir matéria original ↗
                 </a>
                 {isUnread && (
                   <button

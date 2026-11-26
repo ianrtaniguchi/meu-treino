@@ -77,14 +77,14 @@ export default function Dieta() {
   return (
     <>
       <PromptTitle path="~/dieta" />
-      <div className="row between">
-        <button onClick={() => setDate(addDays(date, -1))}>‹</button>
+      <div className="date-nav">
+        <button onClick={() => setDate(addDays(date, -1))} aria-label="dia anterior">‹</button>
         <b>{date === today() ? 'hoje' : fmtLong(date)}</b>
-        <button onClick={() => setDate(addDays(date, 1))}>›</button>
+        <button onClick={() => setDate(addDays(date, 1))} aria-label="próximo dia">›</button>
       </div>
 
-      <button className="primary block" style={{ marginTop: 10 }} disabled={photoBusy} onClick={() => fileRef.current?.click()}>
-        {photoBusy ? 'analisando prato…' : 'Foto do prato'}
+      <button className="ai block" style={{ marginTop: 10 }} disabled={photoBusy} onClick={() => fileRef.current?.click()}>
+        {photoBusy ? 'analisando prato…' : 'foto do prato (IA)'}
       </button>
       <input
         ref={fileRef}

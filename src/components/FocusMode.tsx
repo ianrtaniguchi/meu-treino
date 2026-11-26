@@ -132,7 +132,7 @@ export default function FocusMode({ id, onMinimize }: { id: string; onMinimize: 
             ))}
           </div>
 
-          <button className="primary cta block" disabled={num(value) <= 0} onClick={conclude}>$ concluir série</button>
+          <button className="primary cta block" disabled={num(value) <= 0} onClick={conclude}>concluir série</button>
 
           {entry.sets.length > 0 && (
             <div className="sets-line">

@@ -261,7 +261,7 @@ export default function App() {
           <div><b>Instale o app na Tela de Início ANTES de registrar dados.</b> No iPhone, os dados do Safari e do app instalado são separados.</div>
           <div className="muted small"># Safari: compartilhar → "Adicionar à Tela de Início". Depois abra sempre pelo ícone. Faça backups com frequência em ~/config.</div>
         </div>
-        <button className="primary block" onClick={() => setSetting('onboardingDone', true)}>$ entendi</button>
+        <button className="primary block" onClick={() => setSetting('onboardingDone', true)}>entendi</button>
       </div>
     )
 

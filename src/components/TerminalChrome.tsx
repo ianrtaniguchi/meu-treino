@@ -189,7 +189,7 @@ export function LockScreen({
         <div className="lock-cmd">$ auth --biometric</div>
         {error && <div className="lock-err">{error}</div>}
         <button className="primary block" disabled={busy} onClick={() => void handleBiometric()}>
-          {busy ? 'verificando…' : '$ desbloquear'}
+          {busy ? 'verificando…' : 'desbloquear'}
         </button>
 
         {!showPin && config.pinHash && (
@@ -217,7 +217,7 @@ export function LockScreen({
               disabled={busy || waitSec > 0 || pin.length < 4}
               onClick={() => void handlePin()}
             >
-              {waitSec > 0 ? `aguarde ${waitSec}s…` : '$ autenticar com PIN'}
+              {waitSec > 0 ? `aguarde ${waitSec}s…` : 'autenticar com PIN'}
             </button>
           </div>
         )}

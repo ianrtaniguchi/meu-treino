@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="pt-BR" style="background-color: #0d1117;">
+<html lang="pt-BR" data-theme="dark" style="background-color: #0d1117;">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
@@ -12,8 +12,21 @@
     <link rel="apple-touch-icon" sizes="180x180" href="%BASE_URL%apple-touch-icon.png" />
     <link rel="icon" type="image/png" href="%BASE_URL%favicon.png" />
     <title>Meu Treino</title>
+    <script>
+      (function () {
+        try {
+          var t = localStorage.getItem('meu-treino-theme');
+          if (t !== 'light' && t !== 'baby' && t !== 'dark') t = 'dark';
+          var bg = t === 'light' ? '#f4f6f9' : t === 'baby' ? '#fff3f7' : '#0d1117';
+          document.documentElement.setAttribute('data-theme', t);
+          document.documentElement.style.backgroundColor = bg;
+          var m = document.querySelector('meta[name="theme-color"]');
+          if (m) m.setAttribute('content', bg);
+        } catch (e) {}
+      })();
+    </script>
   </head>
-  <body style="background-color: #0d1117; margin: 0;">
+  <body style="margin: 0;">
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
