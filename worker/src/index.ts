@@ -50,6 +50,10 @@ export interface Env {
 export const GOOGLE_JWKS_URL =
   'https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com'
 export const GROQ_CHAT_URL = 'https://api.groq.com/openai/v1/chat/completions'
+export const GROQ_TRANSCRIBE_URL = 'https://api.groq.com/openai/v1/audio/transcriptions'
+export const DEFAULT_TRANSCRIBE_MODEL = 'whisper-large-v3-turbo'
+export const MAX_AUDIO_BODY_BYTES = 10 * 1024 * 1024 // 10 MB
+export const MIN_AUDIO_FILE_BYTES = 256
 export const GOOGLE_OAUTH_TOKEN_URL = 'https://oauth2.googleapis.com/token'
 export const GOOGLE_CALENDAR_EVENTS_URL =
   'https://www.googleapis.com/calendar/v3/calendars/primary/events'
@@ -1085,6 +1089,97 @@ async function analyzeMealImage(
   }
 }
 
+// ---------- Transcrição de áudio por voz (/transcribe): Whisper na Groq ----------
+
+const ALLOWED_AUDIO_EXT_RE = /\.(webm|m4a|mp4|mp3|mpeg|mpga|ogg|oga|wav|flac)$/i
+
+export function normalizeAudioFilename(rawName?: string | null, mimeType?: string | null): string {
+  const cleanName = typeof rawName === 'string' ? rawName.trim() : ''
+  if (cleanName && ALLOWED_AUDIO_EXT_RE.test(cleanName)) {
+    return cleanName
+  }
+  const m = typeof mimeType === 'string' ? mimeType.toLowerCase() : ''
+  if (m.includes('mp4') || m.includes('aac') || m.includes('m4a') || m.includes('x-m4a')) {
+    return 'gravacao.m4a'
+  }
+  if (m.includes('ogg') || (m.includes('opus') && !m.includes('webm'))) {
+    return 'gravacao.ogg'
+  }
+  if (m.includes('wav')) {
+    return 'gravacao.wav'
+  }
+  if (m.includes('mp3') || m.includes('mpeg')) {
+    return 'gravacao.mp3'
+  }
+  return 'gravacao.webm'
+}
+
+async function transcribeAudioWithGroq(
+  audioBlob: Blob,
+  filename: string,
+  groqApiKey: string,
+  fetcher: typeof fetch,
+): Promise<{ status: number; body: Record<string, unknown> }> {
+  const upstreamForm = new FormData()
+  upstreamForm.append('file', audioBlob, filename)
+  upstreamForm.append('model', DEFAULT_TRANSCRIBE_MODEL)
+  upstreamForm.append('language', 'pt')
+  upstreamForm.append('response_format', 'json')
+  upstreamForm.append('temperature', '0')
+
+  let res: Response
+  try {
+    res = await fetcher(GROQ_TRANSCRIBE_URL, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${groqApiKey}`,
+      },
+      body: upstreamForm,
+    })
+  } catch {
+    return {
+      status: 502,
+      body: { error: 'error: falha de comunicação com o serviço de transcrição da Groq.' },
+    }
+  }
+
+  if (!res.ok) {
+    if (res.status === 429) {
+      return {
+        status: 429,
+        body: { error: 'error: limite de transcrição da Groq atingido (429). Aguarde alguns instantes.' },
+      }
+    }
+    if (res.status === 401 || res.status === 403) {
+      return {
+        status: 502,
+        body: { error: 'error: falha de autenticação na API de transcrição da Groq.' },
+      }
+    }
+    return {
+      status: 502,
+      body: { error: `error: falha no serviço de transcrição da Groq (HTTP ${res.status}).` },
+    }
+  }
+
+  try {
+    const data = (await res.json()) as { text?: unknown }
+    const text = typeof data?.text === 'string' ? data.text.trim() : ''
+    if (!text) {
+      return {
+        status: 422,
+        body: { error: 'error: nenhuma fala foi reconhecida no áudio. Tente falar mais perto do microfone.' },
+      }
+    }
+    return { status: 200, body: { text } }
+  } catch {
+    return {
+      status: 502,
+      body: { error: 'error: resposta inválida do serviço de transcrição.' },
+    }
+  }
+}
+
 // ---------- Handler principal do Cloudflare Worker ----------
 
 export async function handleRequest(
@@ -1115,9 +1210,16 @@ export async function handleRequest(
   }
 
   const isAnalyzeMeal = url.pathname === '/analyze-meal'
+  const isTranscribe = url.pathname === '/transcribe'
   const isIfesStatus = url.pathname === '/ifes/status'
   const isPushTest = url.pathname === '/push-test'
-  if (url.pathname !== '/chat' && !isAnalyzeMeal && !isIfesStatus && !isPushTest) {
+  if (
+    url.pathname !== '/chat' &&
+    !isAnalyzeMeal &&
+    !isTranscribe &&
+    !isIfesStatus &&
+    !isPushTest
+  ) {
     return jsonResponse(404, { error: 'error: rota não encontrada.' }, origin)
   }
 
@@ -1181,6 +1283,57 @@ export async function handleRequest(
     } catch (e) {
       return jsonResponse(503, { error: `error: ${(e as Error).message}` }, origin)
     }
+  }
+
+  if (isTranscribe) {
+    const contentLengthHeader = request.headers.get('Content-Length')
+    if (contentLengthHeader && Number.parseInt(contentLengthHeader, 10) > MAX_AUDIO_BODY_BYTES) {
+      return jsonResponse(413, { error: 'error: arquivo de áudio excede o limite de 10 MB.' }, origin)
+    }
+    const contentType = request.headers.get('Content-Type') ?? ''
+    if (!contentType.toLowerCase().includes('multipart/form-data')) {
+      return jsonResponse(
+        400,
+        { error: 'error: envie o áudio em multipart/form-data com o campo "file".' },
+        origin,
+      )
+    }
+
+    let formData: FormData
+    try {
+      formData = await request.formData()
+    } catch {
+      return jsonResponse(400, { error: 'error: falha ao ler multipart/form-data do áudio.' }, origin)
+    }
+
+    const fileEntry = formData.get('file')
+    if (!fileEntry || typeof fileEntry === 'string' || typeof (fileEntry as Blob).arrayBuffer !== 'function') {
+      return jsonResponse(400, { error: 'error: campo "file" ausente ou inválido no envio de áudio.' }, origin)
+    }
+
+    const audioBlob = fileEntry as Blob
+    if (audioBlob.size < MIN_AUDIO_FILE_BYTES) {
+      return jsonResponse(
+        400,
+        { error: 'error: áudio vazio ou muito curto. Grave por pelo menos 1 segundo.' },
+        origin,
+      )
+    }
+    if (audioBlob.size > MAX_AUDIO_BODY_BYTES) {
+      return jsonResponse(413, { error: 'error: arquivo de áudio excede o limite de 10 MB.' }, origin)
+    }
+
+    let groqKey: string
+    try {
+      groqKey = await resolveGroqApiKey(env, projectId, jwtPayload.sub, userIdToken, fetcher, nowMs)
+    } catch {
+      return jsonResponse(503, { error: 'chave do assistente não configurada' }, origin)
+    }
+
+    const rawName = typeof (audioBlob as File).name === 'string' ? (audioBlob as File).name : undefined
+    const filename = normalizeAudioFilename(rawName, audioBlob.type)
+    const out = await transcribeAudioWithGroq(audioBlob, filename, groqKey, fetcher)
+    return jsonResponse(out.status, out.body, origin)
   }
 
   // Limite de 64 KB para o corpo do chat (a foto do prato tem um limite próprio, maior)

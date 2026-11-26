@@ -22,6 +22,13 @@ import {
   type AssistantDraft,
   type ChatTurnMessage,
 } from '../src/lib/assistant'
+import {
+  describeMediaError,
+  detectSupportedAudioMime,
+  extensionForAudioMime,
+  filenameForAudioMime,
+  transcribeAudioClip,
+} from '../src/lib/audioRecorder'
 import { CALENDAR_SCOPE } from '../scripts/google-oauth.mjs'
 
 async function resetDb() {
@@ -553,5 +560,71 @@ describe('Assistente de IA no App (ferramentas, rascunhos, privacidade e isolame
       tool: 'cancel_push_reminder',
       args: { id: 'rem_creatina123' },
     })
+  })
+
+  it('gravador e transcrição de áudio cross-platform (PC WebM/Opus e iOS Safari MP4/AAC -> /transcribe)', async () => {
+    // 1. No PC (Chromium/Edge/Brave): prioriza audio/webm;codecs=opus -> gravacao.webm
+    const pcMime = detectSupportedAudioMime((m) => m === 'audio/webm;codecs=opus' || m === 'audio/webm')
+    expect(pcMime).toEqual({
+      mimeType: 'audio/webm;codecs=opus',
+      extension: 'webm',
+      filename: 'gravacao.webm',
+    })
+
+    // 2. No iPhone (iOS Safari/WebKit PWA): quando só audio/mp4 é suportado -> gravacao.m4a
+    const iosMime = detectSupportedAudioMime((m) => m === 'audio/mp4')
+    expect(iosMime).toEqual({
+      mimeType: 'audio/mp4',
+      extension: 'm4a',
+      filename: 'gravacao.m4a',
+    })
+
+    expect(extensionForAudioMime('audio/mp4;codecs=mp4a.40.2')).toBe('m4a')
+    expect(filenameForAudioMime('audio/aac')).toBe('gravacao.m4a')
+    expect(filenameForAudioMime('audio/webm')).toBe('gravacao.webm')
+    expect(describeMediaError({ name: 'NotAllowedError' })).toContain('permissão de microfone negada')
+    expect(describeMediaError({ name: 'NotFoundError' })).toContain('nenhum microfone encontrado')
+
+    // 3. Rejeita clipe com menos de 0,6s (600ms) antes mesmo de chamar a rede
+    const shortClip = {
+      blob: new Blob([new Uint8Array(1024)], { type: 'audio/mp4' }),
+      mimeType: 'audio/mp4',
+      filename: 'gravacao.m4a',
+      durationMs: 350,
+    }
+    await expect(
+      transcribeAudioClip(shortClip, {
+        getToken: async () => 'fake-token',
+        workerUrl: 'https://meu-worker.workers.dev',
+      }),
+    ).rejects.toThrow(/muito curta/)
+
+    // 4. Envia FormData com arquivo e extensão correta para POST /transcribe
+    let sentUrl = ''
+    let sentFile: any = null
+    const mockTranscribeFetch: typeof fetch = async (input, init) => {
+      sentUrl = String(input)
+      const fd = init?.body as FormData
+      sentFile = fd.get('file') as File
+      return new Response(JSON.stringify({ text: 'Como foi minha semana de treino?' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
+
+    const validClip = {
+      blob: new Blob([new Uint8Array(2048)], { type: 'audio/mp4' }),
+      mimeType: 'audio/mp4',
+      filename: 'gravacao.m4a',
+      durationMs: 2400,
+    }
+    const text = await transcribeAudioClip(validClip, {
+      fetcher: mockTranscribeFetch,
+      getToken: async () => 'fake-token',
+      workerUrl: 'https://meu-worker.workers.dev',
+    })
+    expect(text).toBe('Como foi minha semana de treino?')
+    expect(sentUrl).toBe('https://meu-worker.workers.dev/transcribe')
+    expect(sentFile?.name).toBe('gravacao.m4a')
   })
 })

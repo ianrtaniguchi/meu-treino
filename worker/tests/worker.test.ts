@@ -9,9 +9,11 @@ import {
   GOOGLE_JWKS_URL,
   GOOGLE_OAUTH_TOKEN_URL,
   GROQ_CHAT_URL,
+  GROQ_TRANSCRIBE_URL,
   handleRequest,
   isValidGroqApiKey,
   listar_eventos,
+  normalizeAudioFilename,
   resetWorkerCachesForTest,
   type Env,
   type JsonWebKeyWithKid,
@@ -816,6 +818,78 @@ describe('Cloudflare Worker Proxy (/chat)', () => {
       headers: { Origin: ALLOWED_ORIGIN, Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ messages: [{ role: 'user', content: 'x'.repeat(70 * 1024) }] }),
     })
-    expect((await handleRequest(bigChat, env, { fetcher, nowMs })).status).toBe(413)
+    expect((await handleRequest(bigChat, env, { fetcher: badFetcher, nowMs })).status).toBe(413)
+  })
+
+  it('/transcribe: transcreve multipart/form-data com whisper-large-v3-turbo (language=pt, response_format=json, temperature=0) e valida limites', async () => {
+    expect(normalizeAudioFilename('gravacao.webm', 'audio/webm;codecs=opus')).toBe('gravacao.webm')
+    expect(normalizeAudioFilename('', 'audio/mp4')).toBe('gravacao.m4a')
+    expect(normalizeAudioFilename('sem-extensao', 'audio/aac')).toBe('gravacao.m4a')
+
+    const env = makeBaseEnv()
+    const token = await signTestJwt({
+      iss: `https://securetoken.google.com/${PROJECT_ID}`,
+      aud: PROJECT_ID,
+      sub: MY_UID,
+      iat: nowSec - 10,
+      exp: nowSec + 3600,
+    })
+
+    let capturedForm: any = null
+    let capturedAuth = ''
+
+    const baseFetcher = createMockFetcher()
+    const transcribeFetcher: typeof fetch = async (input, init) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+      if (url === GROQ_TRANSCRIBE_URL) {
+        capturedAuth = new Headers(init?.headers).get('Authorization') ?? ''
+        capturedForm = init?.body as FormData
+        return new Response(
+          JSON.stringify({ text: 'Me lembra às 18 horas de tomar creatina.' }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        )
+      }
+      return baseFetcher(input, init)
+    }
+
+    // 1. Áudio válido em audio/mp4 (como gravado pelo iPhone iOS Safari/PWA)
+    const audioBytes = new Uint8Array(1024).fill(7)
+    const audioBlob = new Blob([audioBytes], { type: 'audio/mp4' })
+    const form = new FormData()
+    form.append('file', audioBlob, 'gravacao.m4a')
+
+    const reqOk = new Request('https://worker.example.com/transcribe', {
+      method: 'POST',
+      headers: {
+        Origin: ALLOWED_ORIGIN,
+        Authorization: `Bearer ${token}`,
+      },
+      body: form,
+    })
+    const resOk = await handleRequest(reqOk, env, { fetcher: transcribeFetcher, nowMs })
+    expect(resOk.status).toBe(200)
+    const dataOk = (await resOk.json()) as { text: string }
+    expect(dataOk.text).toBe('Me lembra às 18 horas de tomar creatina.')
+    expect(capturedAuth).toBe(`Bearer ${VALID_FIRESTORE_KEY}`)
+    expect(capturedForm?.get('model')).toBe('whisper-large-v3-turbo')
+    expect(capturedForm?.get('language')).toBe('pt')
+    expect(capturedForm?.get('response_format')).toBe('json')
+    expect(capturedForm?.get('temperature')).toBe('0')
+    const uploadedFile = capturedForm?.get('file') as File
+    expect(uploadedFile.name).toBe('gravacao.m4a')
+
+    // 2. Áudio vazio / muito curto (< 256 bytes) -> 400
+    const tinyForm = new FormData()
+    tinyForm.append('file', new Blob([new Uint8Array(10)], { type: 'audio/webm' }), 'gravacao.webm')
+    const reqTiny = new Request('https://worker.example.com/transcribe', {
+      method: 'POST',
+      headers: {
+        Origin: ALLOWED_ORIGIN,
+        Authorization: `Bearer ${token}`,
+      },
+      body: tinyForm,
+    })
+    const resTiny = await handleRequest(reqTiny, env, { fetcher: transcribeFetcher, nowMs })
+    expect(resTiny.status).toBe(400)
   })
 })

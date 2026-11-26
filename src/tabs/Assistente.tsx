@@ -1,5 +1,5 @@
 import { useLiveQuery } from 'dexie-react-hooks'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { PromptTitle } from '../components/TerminalChrome'
 import { useUi } from '../components/ui'
 import { dayTotals } from '../data/stats'
@@ -17,6 +17,11 @@ import {
   type ChatTurnMessage,
   type PushReminderCardItem,
 } from '../lib/assistant'
+import {
+  startAudioRecording,
+  transcribeAudioClip,
+  type ActiveAudioRecorder,
+} from '../lib/audioRecorder'
 
 const MEAL_LABELS: Record<string, string> = {
   cafe: 'café da manhã',
@@ -42,6 +47,9 @@ export default function Assistente() {
   const [online, setOnline] = useState<boolean>(
     typeof navigator !== 'undefined' ? navigator.onLine !== false : true,
   )
+  const [voiceState, setVoiceState] = useState<'idle' | 'recording' | 'transcribing'>('idle')
+  const [recordSec, setRecordSec] = useState(0)
+  const recorderRef = useRef<ActiveAudioRecorder | null>(null)
 
   useEffect(() => {
     const onStatus = () => setOnline(navigator.onLine !== false)
@@ -52,6 +60,24 @@ export default function Assistente() {
       window.removeEventListener('offline', onStatus)
     }
   }, [])
+
+  useEffect(() => {
+    return () => {
+      recorderRef.current?.cancel()
+      recorderRef.current = null
+    }
+  }, [])
+
+  useEffect(() => {
+    if (voiceState !== 'recording') {
+      setRecordSec(0)
+      return
+    }
+    const timer = window.setInterval(() => {
+      setRecordSec((s) => s + 1)
+    }, 1000)
+    return () => window.clearInterval(timer)
+  }, [voiceState])
 
   const canUse = Boolean(syncStatus.user && online)
 
@@ -176,6 +202,59 @@ export default function Assistente() {
       toast('Lembrete push cancelado')
     } catch (e) {
       toast((e as Error).message || 'Falha ao cancelar lembrete')
+    }
+  }
+
+  const fmtRecTimer = (sec: number) => {
+    const mm = String(Math.floor(sec / 60)).padStart(2, '0')
+    const ss = String(sec % 60).padStart(2, '0')
+    return `${mm}:${ss}`
+  }
+
+  const handleStartVoice = async () => {
+    if (!canUse || busy || voiceState !== 'idle') return
+    setErr('')
+    try {
+      const rec = await startAudioRecording()
+      recorderRef.current = rec
+      setVoiceState('recording')
+    } catch (e) {
+      const msg = (e as Error)?.message || 'error: falha ao acessar o microfone.'
+      setErr(msg.startsWith('error:') ? msg : `error: ${msg}`)
+      setVoiceState('idle')
+    }
+  }
+
+  const handleCancelVoice = () => {
+    recorderRef.current?.cancel()
+    recorderRef.current = null
+    setVoiceState('idle')
+  }
+
+  const handleStopAndTranscribe = async (autoSend: boolean) => {
+    const rec = recorderRef.current
+    if (!rec) {
+      setVoiceState('idle')
+      return
+    }
+    recorderRef.current = null
+    setErr('')
+    setVoiceState('transcribing')
+    try {
+      const clip = await rec.stop()
+      const transcribed = await transcribeAudioClip(clip)
+      setVoiceState('idle')
+      if (autoSend) {
+        const combined = input.trim() ? `${input.trim()} ${transcribed}` : transcribed
+        await handleSend(combined)
+      } else {
+        setInput((prev) => (prev.trim() ? `${prev.trim()} ${transcribed}` : transcribed))
+        toast('Áudio transcrito')
+      }
+    } catch (e) {
+      setVoiceState('idle')
+      const msg = (e as Error)?.message || 'error: falha ao transcrever áudio.'
+      setErr(msg.startsWith('error:') ? msg : `error: ${msg}`)
     }
   }
 
@@ -312,22 +391,72 @@ export default function Assistente() {
           <textarea
             rows={2}
             value={input}
-            disabled={!canUse || busy}
+            disabled={!canUse || busy || voiceState !== 'idle'}
             onChange={(e) => setInput(e.target.value)}
             placeholder={
               canUse
-                ? 'Ex.: Analise meu treino da semana ou proponha meu jantar com 45g de proteína…'
+                ? 'Ex.: Analise meu treino da semana, me lembra às 18h de tomar creatina…'
                 : 'Entre na conta em ~/config e fique online para usar o assistente'
             }
           />
         </label>
-        <button
-          className="primary block"
-          disabled={!canUse || busy || !input.trim()}
-          onClick={() => void handleSend()}
-        >
-          {busy ? 'consultando assistente…' : '$ enviar'}
-        </button>
+
+        {voiceState === 'recording' && (
+          <div
+            className="card stack small"
+            style={{ background: 'var(--bg)', borderColor: 'var(--amber)', marginBottom: 0 }}
+          >
+            <div className="row between">
+              <b className="amber">● gravando áudio · {fmtRecTimer(recordSec)}</b>
+              <span className="muted small">whisper-large-v3-turbo</span>
+            </div>
+            <div className="grid2">
+              <button
+                className="primary small"
+                onClick={() => void handleStopAndTranscribe(true)}
+              >
+                $ transcrever e enviar
+              </button>
+              <button
+                className="small"
+                onClick={() => void handleStopAndTranscribe(false)}
+              >
+                $ só transcrever
+              </button>
+            </div>
+            <button className="small danger block" onClick={handleCancelVoice}>
+              cancelar gravação
+            </button>
+          </div>
+        )}
+
+        {voiceState === 'transcribing' && (
+          <div
+            className="card small"
+            style={{ background: 'var(--bg)', borderColor: 'var(--green)', marginBottom: 0 }}
+          >
+            <span className="green">&gt; transcrevendo áudio por voz (whisper)…</span>
+          </div>
+        )}
+
+        {voiceState === 'idle' && (
+          <div className="grid2">
+            <button
+              className="primary"
+              disabled={!canUse || busy || !input.trim()}
+              onClick={() => void handleSend()}
+            >
+              {busy ? 'consultando assistente…' : '$ enviar'}
+            </button>
+            <button
+              disabled={!canUse || busy}
+              onClick={() => void handleStartVoice()}
+              aria-label="gravar áudio por voz"
+            >
+              $ gravar voz
+            </button>
+          </div>
+        )}
       </div>
     </>
   )
