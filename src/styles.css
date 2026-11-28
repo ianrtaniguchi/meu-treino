@@ -619,14 +619,6 @@ h3 {
   gap: 2px;
   min-width: 0;
 }
-.prompt-path {
-  font-family: var(--mono);
-  font-size: 11px;
-  font-weight: 400;
-  color: var(--muted-dim);
-  letter-spacing: 0.01em;
-  line-height: 1.2;
-}
 .prompt-title {
   font-family: var(--serif);
   font-size: 27px;

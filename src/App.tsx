@@ -1,20 +1,31 @@
 import { useLiveQuery } from 'dexie-react-hooks'
-import { useEffect, useRef, useState, type CSSProperties } from 'react'
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
 import { OWNER_UID } from './assistantConfig'
 import { autoSnapshotIfDue } from './data/backup'
 import { db, setSetting } from './data/db'
 import { ensureSeed } from './data/seed'
-import { initSyncManager } from './data/sync'
+import { initSyncManager, subscribeLoginSuccess } from './data/sync'
 import { useSetting, useSyncStatus } from './hooks'
 import {
   DEFAULT_LOCK_TIMEOUT_MINUTES,
   getLockConfig,
+  getLockedState,
   getPersistedHiddenAt,
   recordHiddenTimestamp,
   setLockedState,
   shouldLockAfterBackground,
   shouldLockOnColdStart,
 } from './lib/lock'
+import {
+  SPLASH_FADEOUT_MS,
+  SPLASH_HOLD_MS,
+  SPLASH_MIN_INTERVAL_MS,
+  SPLASH_REDUCED_MOTION_MS,
+  recordSplashShown,
+  shouldShowSplash,
+  splashIntervalFor,
+  type SplashReason,
+} from './lib/splash'
 import Treino from './tabs/Treino'
 import Dieta from './tabs/Dieta'
 import Corpo from './tabs/Corpo'
@@ -29,8 +40,6 @@ import {
   ChromeNavContext,
   LockScreen,
   PromptTitle,
-  recordSplashShown,
-  shouldShowSplashOnColdStart,
   type FitnessSection,
 } from './components/TerminalChrome'
 import { useUi } from './components/ui'
@@ -60,13 +69,13 @@ const NAV_SLOTS: Array<{ tab: Tab; left: number; width: number }> = [
   { tab: 'config', left: 0.8, width: 0.2 },
 ]
 const TAB_LABELS: Record<Tab, string> = {
-  treino: 'Treino, Dieta e Corpo (~/treino)',
-  dieta: 'Dieta (~/dieta)',
-  corpo: 'Corpo (~/corpo)',
-  assistente: 'Agente IA (~/assistente)',
-  noticias: 'Notícias do Ifes (~/noticias)',
-  onibus: 'Ônibus Transcol / Ceturb-ES (~/onibus)',
-  config: 'Configurações (~/config)',
+  treino: 'Treino, Dieta e Corpo',
+  dieta: 'Dieta',
+  corpo: 'Corpo',
+  assistente: 'Assistente',
+  noticias: 'Notícias do Ifes',
+  onibus: 'Ônibus (Transcol / Ceturb-ES)',
+  config: 'Configurações',
 }
 const FITNESS_SECTION_STORAGE_KEY = 'meu_treino_fitness_section'
 
@@ -100,8 +109,6 @@ function persistFitnessSection(section: FitnessSection): void {
   }
 }
 const WEEK = 7 * 24 * 3600 * 1000
-const SPLASH_HOLD_MS = 1950
-const SPLASH_FADEOUT_MS = 520
 
 export default function App() {
   const { toast } = useUi()
@@ -123,14 +130,18 @@ export default function App() {
     getSavedFitnessSection(),
   )
   const [lastNonConfigTab, setLastNonConfigTab] = useState<Tab>('treino')
-  const [bootVisible, setBootVisible] = useState<boolean>(() => {
-    const show = shouldShowSplashOnColdStart(Date.now())
-    if (show) recordSplashShown(Date.now())
-    return show
-  })
+  // Saudação: com a trava ativa ela NÃO abre na carga (aparece após o desbloqueio); sem trava, segue o intervalo mínimo.
+  const initialSplashRef = useRef<boolean>(
+    !getLockedState() && shouldShowSplash(Date.now(), SPLASH_MIN_INTERVAL_MS),
+  )
+  const [bootVisible, setBootVisible] = useState<boolean>(initialSplashRef.current)
   const [bootFading, setBootFading] = useState<boolean>(false)
+  const [bootKey, setBootKey] = useState<number>(0)
+  const splashTimersRef = useRef<{ fade?: number; hide?: number }>({})
   const [bootLines, setBootLines] = useState<string[]>(['> loading db...'])
   const [locked, setLocked] = useState<boolean>(true)
+  const lockedRef = useRef<boolean>(true)
+  lockedRef.current = locked
   const [hasUnlockedThisSession, setHasUnlockedThisSession] = useState<boolean>(false)
   const [tabPressing, setTabPressing] = useState<boolean>(false)
   const navRef = useRef<HTMLElement | null>(null)
@@ -198,26 +209,56 @@ export default function App() {
     }
   }
 
-  useEffect(() => {
+  const hideSplash = useCallback(() => {
+    window.clearTimeout(splashTimersRef.current.fade)
+    window.clearTimeout(splashTimersRef.current.hide)
+    setBootFading(false)
+    setBootVisible(false)
+  }, [])
+
+  const startSplash = useCallback(() => {
+    window.clearTimeout(splashTimersRef.current.fade)
+    window.clearTimeout(splashTimersRef.current.hide)
     const reducedMotion =
-      typeof window !== 'undefined' &&
       typeof window.matchMedia === 'function' &&
       window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    setBootFading(false)
+    setBootKey((k) => k + 1)
+    setBootVisible(true)
+    if (reducedMotion) {
+      // sem fade: corte seco
+      splashTimersRef.current.hide = window.setTimeout(hideSplash, SPLASH_REDUCED_MOTION_MS)
+      return
+    }
+    splashTimersRef.current.fade = window.setTimeout(() => setBootFading(true), SPLASH_HOLD_MS)
+    splashTimersRef.current.hide = window.setTimeout(
+      hideSplash,
+      SPLASH_HOLD_MS + SPLASH_FADEOUT_MS,
+    )
+  }, [hideSplash])
 
-    const fadeTimer = window.setTimeout(
-      () => {
-        if (reducedMotion) {
-          setBootVisible(false)
-        } else {
-          setBootFading(true)
-        }
-      },
-      reducedMotion ? 1400 : SPLASH_HOLD_MS,
-    )
-    const hideTimer = window.setTimeout(
-      () => setBootVisible(false),
-      reducedMotion ? 1400 : SPLASH_HOLD_MS + SPLASH_FADEOUT_MS,
-    )
+  /** Mostra a saudação se o intervalo mínimo daquele motivo já passou. */
+  const showSplash = useCallback(
+    (reason: SplashReason): boolean => {
+      const now = Date.now()
+      if (!shouldShowSplash(now, splashIntervalFor(reason))) return false
+      recordSplashShown(now)
+      startSplash()
+      return true
+    },
+    [startSplash],
+  )
+  const showSplashRef = useRef(showSplash)
+  showSplashRef.current = showSplash
+
+  // Login novo (e-mail, Google popup ou retorno de redirect) => saudação
+  useEffect(() => subscribeLoginSuccess(() => showSplashRef.current('login')), [])
+
+  useEffect(() => {
+    if (initialSplashRef.current) {
+      recordSplashShown(Date.now())
+      startSplash()
+    }
     ;(async () => {
       try {
         await db.open()
@@ -226,9 +267,11 @@ export default function App() {
         setLocked(coldLocked)
         setLockedState(coldLocked)
         if (coldLocked) {
-          setBootVisible(false)
+          // trava ativa: a saudação aparece só depois do desbloqueio (handleUnlocked)
+          hideSplash()
         } else {
           setHasUnlockedThisSession(true)
+          if (!initialSplashRef.current) showSplashRef.current('cold-start')
         }
         await ensureSeed()
         setBootLines(['> loading db... ok', '> storage.persist...'])
@@ -243,15 +286,15 @@ export default function App() {
         ])
         setReady(true)
       } catch (e) {
-        setBootVisible(false)
+        hideSplash()
         setError(String((e as Error)?.message ?? e))
       }
     })()
     return () => {
-      window.clearTimeout(fadeTimer)
-      window.clearTimeout(hideTimer)
+      window.clearTimeout(splashTimersRef.current.fade)
+      window.clearTimeout(splashTimersRef.current.hide)
     }
-  }, [])
+  }, [hideSplash, startSplash])
 
   useEffect(() => {
     const onHidden = () => {
@@ -260,12 +303,16 @@ export default function App() {
 
     const onVisible = async () => {
       const cfg = await getLockConfig()
-      if (!cfg.enabled) return
-      const hiddenAt = (await getPersistedHiddenAt()) ?? cfg.hiddenAt
-      if (shouldLockAfterBackground(hiddenAt, Date.now(), cfg.timeoutMinutes)) {
-        setLocked(true)
-        setLockedState(true)
+      if (cfg.enabled) {
+        const hiddenAt = (await getPersistedHiddenAt()) ?? cfg.hiddenAt
+        if (shouldLockAfterBackground(hiddenAt, Date.now(), cfg.timeoutMinutes)) {
+          setLocked(true)
+          setLockedState(true)
+          return // a saudação vem logo após o desbloqueio
+        }
       }
+      // No iOS o PWA retoma do segundo plano sem recarregar: aplica o intervalo mínimo também aqui
+      if (!lockedRef.current) showSplashRef.current('resume')
     }
 
     const onVisibilityChange = () => {
@@ -355,6 +402,8 @@ export default function App() {
     setLocked(false)
     setLockedState(false)
     setHasUnlockedThisSession(true)
+    // Saudação logo após o desbloqueio bem-sucedido (Face ID ou PIN)
+    showSplash('unlock')
   }
 
   if (error)
@@ -372,10 +421,11 @@ export default function App() {
     }
     return bootVisible ? (
       <BootOverlay
+        key={bootKey}
         lines={bootLines}
         userName={resolvedGreetingName}
         fadingOut={bootFading}
-        onSkip={() => setBootVisible(false)}
+        onSkip={hideSplash}
       />
     ) : null
   }
@@ -437,10 +487,11 @@ export default function App() {
       <div className="app">
         {bootVisible && !isCurrentlyLocked && (
           <BootOverlay
+            key={bootKey}
             lines={bootLines}
             userName={resolvedGreetingName}
             fadingOut={bootFading}
-            onSkip={() => setBootVisible(false)}
+            onSkip={hideSplash}
           />
         )}
         {isCurrentlyLocked && (

@@ -130,7 +130,7 @@ export default function Assistente() {
       return
     }
     if (!syncStatus.user) {
-      setErr('error: entre na sua conta na aba ~/config para autenticar no assistente.')
+      setErr('error: entre na sua conta na aba Configurações para autenticar no assistente.')
       return
     }
 
@@ -323,7 +323,7 @@ export default function Assistente() {
       {!syncStatus.user && (
         <div className="card" style={{ borderColor: 'var(--amber)' }}>
           <div className="amber small">
-            Entre na conta em <b>~/config</b> para usar o assistente.
+            Entre na conta em <b>Configurações</b> para usar o assistente.
           </div>
         </div>
       )}
@@ -447,7 +447,7 @@ export default function Assistente() {
           placeholder={
             canUse
               ? 'Pergunte sobre treinos, dieta ou crie um lembrete…'
-              : 'Entre na conta em ~/config para usar o assistente'
+              : 'Entre na conta em Configurações para usar o assistente'
           }
         />
 

@@ -666,6 +666,20 @@ export async function isolateAccountOnSwitch(nextUid: string): Promise<boolean> 
   return false
 }
 
+// ---------- Evento de login bem-sucedido (usado para exibir a saudação após entrar) ----------
+
+type LoginListener = () => void
+const loginListeners = new Set<LoginListener>()
+
+export function subscribeLoginSuccess(fn: LoginListener): () => void {
+  loginListeners.add(fn)
+  return () => loginListeners.delete(fn)
+}
+
+function emitLoginSuccess(): void {
+  for (const fn of loginListeners) fn()
+}
+
 export function initSyncManager(): void {
   if (initialized || typeof window === 'undefined') return
   initialized = true
@@ -682,7 +696,12 @@ export function initSyncManager(): void {
 
   try {
     const auth = getFirebaseAuth()
-    void getRedirectResult(auth).catch(() => null)
+    // Login por redirecionamento (iOS PWA): ao voltar, o resultado traz o usuário que acabou de entrar
+    void getRedirectResult(auth)
+      .then((res) => {
+        if (res?.user) emitLoginSuccess()
+      })
+      .catch(() => null)
     onAuthStateChanged(auth, async (fbUser: User | null) => {
       if (!fbUser) {
         persistActiveUidToLocalStorage(null)
@@ -711,6 +730,7 @@ export function initSyncManager(): void {
 export async function authSignIn(email: string, pass: string): Promise<void> {
   const auth = getFirebaseAuth()
   await signInWithEmailAndPassword(auth, email.trim(), pass)
+  emitLoginSuccess()
 }
 
 export async function authSignInWithGoogle(): Promise<void> {
@@ -719,6 +739,7 @@ export async function authSignInWithGoogle(): Promise<void> {
   provider.setCustomParameters({ prompt: 'select_account' })
   try {
     await signInWithPopup(auth, provider)
+    emitLoginSuccess()
   } catch (err) {
     const code = (err as { code?: string })?.code ?? ''
     if (

@@ -26,8 +26,6 @@ export const ChromeNavContext = createContext<ChromeNavContextValue>({
 })
 
 export const APP_VERSION = `1.0.${DB_VERSION}`
-export const SPLASH_COOLDOWN_MS = 30 * 60 * 1000 // 30 minutos
-export const SPLASH_STORAGE_KEY = 'meu_treino_last_splash_at'
 
 const PATH_TITLES: Record<string, string> = {
   '~/treino': 'Treino',
@@ -106,29 +104,6 @@ export function getContextualGreeting(now = new Date(), rawName?: string | null)
   }
 }
 
-export function shouldShowSplashOnColdStart(nowMs = Date.now()): boolean {
-  try {
-    if (typeof localStorage === 'undefined') return true
-    const raw = localStorage.getItem(SPLASH_STORAGE_KEY)
-    if (!raw) return true
-    const last = Number.parseInt(raw, 10)
-    if (!Number.isFinite(last)) return true
-    return nowMs - last >= SPLASH_COOLDOWN_MS
-  } catch {
-    return true
-  }
-}
-
-export function recordSplashShown(nowMs = Date.now()): void {
-  try {
-    if (typeof localStorage !== 'undefined') {
-      localStorage.setItem(SPLASH_STORAGE_KEY, String(nowMs))
-    }
-  } catch {
-    // ignore
-  }
-}
-
 /** Barra de status discreta no topo do painel. */
 export function Statusline() {
   const syncStatus = useSyncStatus()
@@ -182,9 +157,9 @@ const FITNESS_SECTIONS: Array<{ key: FitnessSection; label: string }> = [
 ]
 
 /**
- * Cabeçalho editorial da página:
- * Caminho `~/aba` discreto em fonte pequena acima do título direto em serifa (`Newsreader`),
- * com seletor segmentado `Treino | Dieta | Corpo` integrado quando na aba unificada de Treino.
+ * Cabeçalho editorial da página: título direto em serifa (`Newsreader`)
+ * e, na aba unificada, o seletor segmentado `Treino | Dieta | Corpo`.
+ * `path` é só um identificador interno (define o título); não é exibido.
  */
 export function PromptTitle({
   path,
@@ -207,7 +182,6 @@ export function PromptTitle({
     <header className="prompt-header-bar">
       <div className="prompt-header-top">
         <div className="prompt-heading-group">
-          <span className="prompt-path">{path}</span>
           <h1 className="prompt-title">{resolvedTitle}</h1>
         </div>
         {rightSlot ? <div className="prompt-header-actions">{rightSlot}</div> : null}
@@ -329,7 +303,6 @@ export function LockScreen({
   return (
     <div className="lock-screen" role="dialog" aria-label="Tela de bloqueio">
       <div className="lock-panel stack">
-        <div className="prompt-path">~/seguranca</div>
         <div className="lock-cmd">Sessão bloqueada</div>
         {error && <div className="lock-err">{error}</div>}
         <button className="primary block" disabled={busy} onClick={() => void handleBiometric()}>

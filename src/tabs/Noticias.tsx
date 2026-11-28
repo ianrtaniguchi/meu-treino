@@ -168,7 +168,7 @@ export default function Noticias({
       {!syncStatus.user && (
         <div className="card">
           <div className="amber small">
-            Entre na conta em <b>~/config</b> para sincronizar notícias.
+            Entre na conta em <b>Configurações</b> para sincronizar notícias.
           </div>
         </div>
       )}

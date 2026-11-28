@@ -847,7 +847,7 @@ export default function Config() {
             <div className="muted small">Faça login para ver seus lembretes push agendados.</div>
           ) : pendingReminders.length === 0 ? (
             <div className="muted small">
-              Nenhum lembrete push pendente. Peça em <b>~/assistente</b> (ex.: "me lembra às 18h de tomar creatina").
+              Nenhum lembrete push pendente. Peça no <b>Assistente</b> (ex.: "me lembra às 18h de tomar creatina").
             </div>
           ) : (
             pendingReminders.map((rem) => (
