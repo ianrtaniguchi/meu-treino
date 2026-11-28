@@ -4,7 +4,7 @@ export interface Point { x: string; y?: number; y2?: number }
 
 /** Linha fina na cor de destaque do tema; série secundária (média móvel) pontilhada. */
 export default function Chart({ data, name = 'valor', name2 = 'média', unit = '' }: { data: Point[]; name?: string; name2?: string; unit?: string }) {
-  if (data.length < 2) return <p className="muted small"># registre ao menos 2 pontos para ver o gráfico.</p>
+  if (data.length < 2) return <p className="muted small">Registre ao menos 2 pontos para exibir o gráfico.</p>
   const mono = { fontFamily: 'JetBrains Mono, monospace', fontSize: 10 }
   return (
     <div style={{ width: '100%', height: 200 }}>

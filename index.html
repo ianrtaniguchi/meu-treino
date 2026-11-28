@@ -1,14 +1,20 @@
 <!doctype html>
-<html lang="pt-BR" data-theme="dark" style="background-color: #0d1117;">
+<html lang="pt-BR" data-theme="dark" style="background-color: #0b0d11;">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
-    <meta name="theme-color" content="#0d1117" />
+    <meta name="theme-color" content="#0b0d11" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="Meu Treino" />
     <meta name="format-detection" content="telephone=no" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&display=swap"
+      rel="stylesheet"
+    />
     <link rel="apple-touch-icon" sizes="180x180" href="%BASE_URL%apple-touch-icon.png" />
     <link rel="icon" type="image/svg+xml" href="%BASE_URL%icon.svg" />
     <link rel="alternate icon" type="image/png" href="%BASE_URL%favicon.png" />
@@ -18,7 +24,7 @@
         try {
           var t = localStorage.getItem('meu-treino-theme');
           if (t !== 'light' && t !== 'baby' && t !== 'dark') t = 'dark';
-          var bg = t === 'light' ? '#f4f6f9' : t === 'baby' ? '#fff3f7' : '#0d1117';
+          var bg = t === 'light' ? '#f5f4f0' : t === 'baby' ? '#faf2f5' : '#0b0d11';
           document.documentElement.setAttribute('data-theme', t);
           document.documentElement.style.backgroundColor = bg;
           var m = document.querySelector('meta[name="theme-color"]');

@@ -95,7 +95,7 @@ export default function FocusMode({ id, onMinimize }: { id: string; onMinimize: 
 
       {!entry ? (
         <>
-          <p className="muted"># treino vazio. adicione o primeiro exercício.</p>
+          <p className="muted">Treino vazio. Adicione o primeiro exercício.</p>
           <button className="primary cta" onClick={() => setPicking(true)}>+ exercício</button>
         </>
       ) : (

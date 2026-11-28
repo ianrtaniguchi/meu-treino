@@ -148,7 +148,7 @@ export default function LineDetailView({
               aria-label={isFavorite ? 'Remover dos favoritos' : 'Fixar nos favoritos'}
               title={isFavorite ? 'Linha favorita' : 'Favoritar linha'}
             >
-              {isFavorite ? '★ favorita' : '☆ favoritar'}
+              {isFavorite ? 'Fixada' : 'Fixar'}
             </button>
           </div>
         </div>

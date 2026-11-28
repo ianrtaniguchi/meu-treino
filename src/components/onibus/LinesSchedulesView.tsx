@@ -59,11 +59,11 @@ export default function LinesSchedulesView({
       {/* Linhas Favoritas fixadas no topo para acesso em 1 toque */}
       <div className="card stack">
         <div className="row between">
-          <b>★ Favoritas</b>
+          <b>Favoritas</b>
           <span className="muted small">{favoriteLines.length}</span>
         </div>
         {favoriteLines.length === 0 ? (
-          <div className="muted small">Toque em ☆ em uma linha para fixar no topo.</div>
+          <div className="muted small">Selecione linhas abaixo para fixar no topo.</div>
         ) : (
           <div className="chips">
             {favoriteLines.map((fav) => (
@@ -74,7 +74,7 @@ export default function LinesSchedulesView({
                 onClick={() => onSelectLine(fav)}
                 title={fav.name}
               >
-                ★ {fav.code} • {fav.name.length > 26 ? `${fav.name.slice(0, 26)}…` : fav.name}
+                {fav.code} · {fav.name.length > 26 ? `${fav.name.slice(0, 26)}…` : fav.name}
               </button>
             ))}
           </div>
@@ -185,7 +185,7 @@ export default function LinesSchedulesView({
                   }
                   title={fav ? 'Remover dos favoritos' : 'Fixar nos favoritos'}
                 >
-                  {fav ? '★' : '☆'}
+                  {fav ? 'Fixada' : 'Fixar'}
                 </button>
               </div>
             )

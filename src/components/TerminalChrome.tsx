@@ -6,10 +6,7 @@ import Icon from './Icons'
 import {
   authenticateBiometricCredential,
   computePinBackoffMs,
-  getLockConfig,
-  getLockedState,
   recordUnlockTimestamp,
-  subscribeLockedState,
   verifyPin,
   type LockConfig,
 } from '../lib/lock'
@@ -25,88 +22,178 @@ export const ChromeNavContext = createContext<ChromeNavContextValue>({
 })
 
 export const APP_VERSION = `1.0.${DB_VERSION}`
+export const SPLASH_COOLDOWN_MS = 30 * 60 * 1000 // 30 minutos
+export const SPLASH_STORAGE_KEY = 'meu_treino_last_splash_at'
+
+const PATH_TITLES: Record<string, string> = {
+  '~/treino': 'Treino',
+  '~/dieta': 'Dieta',
+  '~/corpo': 'Corpo',
+  '~/assistente': 'Assistente',
+  '~/noticias': 'Notícias',
+  '~/onibus': 'Transporte',
+  '~/config': 'Configurações',
+  '~/inicio': 'Início',
+  '~/erro': 'Erro',
+}
 
 function fmtClock(d = new Date()): string {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 
-/** Barra de status estilo statusline do tmux/vim no topo do painel, com dados reais do app. */
+/**
+ * Gera uma saudação curta, seca e confiante em português de acordo com a faixa de horário.
+ */
+export function getContextualGreeting(now = new Date(), rawName?: string | null): {
+  phrase: string
+  meta: string
+} {
+  const firstName = (rawName ?? '').trim().split(/\s+/)[0] || 'Ian'
+  const h = now.getHours()
+  const dayNames = ['domingo', 'segunda-feira', 'terça-feira', 'quarta-feira', 'quinta-feira', 'sexta-feira', 'sábado']
+  const weekday = dayNames[now.getDay()] ?? ''
+  const clock = fmtClock(now)
+
+  // Seleciona de forma determinística pelo dia do mês para variar com sobriedade
+  const seed = now.getDate() + h
+
+  let pool: string[]
+  if (h >= 0 && h < 5) {
+    pool = [
+      `Acordado até tarde, ${firstName}?`,
+      `Madrugada silenciosa, ${firstName}.`,
+      `A cidade dorme, ${firstName}.`,
+    ]
+  } else if (h >= 5 && h < 9) {
+    pool = [
+      `Cedo no posto, ${firstName}.`,
+      `Bom dia, ${firstName}. Foco no essencial.`,
+      `Manhã limpa, ${firstName}.`,
+    ]
+  } else if (h >= 9 && h < 12) {
+    pool = [
+      `Bom dia, ${firstName}. Constância.`,
+      `Manhã em curso, ${firstName}.`,
+      `Bom dia, ${firstName}.`,
+    ]
+  } else if (h >= 12 && h < 18) {
+    pool = [
+      `Boa tarde, ${firstName}. Sem desvios.`,
+      `Tarde em andamento, ${firstName}.`,
+      `Disciplina silenciosa, ${firstName}.`,
+    ]
+  } else if (h >= 18 && h < 22) {
+    pool = [
+      `Boa noite, ${firstName}.`,
+      `Noite calma, ${firstName}.`,
+      `Boa noite, ${firstName}. Feche o dia.`,
+    ]
+  } else {
+    pool = [
+      `Noite avançada, ${firstName}.`,
+      `Fim de noite, ${firstName}.`,
+      `Acordado até tarde, ${firstName}?`,
+    ]
+  }
+
+  return {
+    phrase: pool[seed % pool.length],
+    meta: `${clock} · ${weekday}`,
+  }
+}
+
+export function shouldShowSplashOnColdStart(nowMs = Date.now()): boolean {
+  try {
+    if (typeof localStorage === 'undefined') return true
+    const raw = localStorage.getItem(SPLASH_STORAGE_KEY)
+    if (!raw) return true
+    const last = Number.parseInt(raw, 10)
+    if (!Number.isFinite(last)) return true
+    return nowMs - last >= SPLASH_COOLDOWN_MS
+  } catch {
+    return true
+  }
+}
+
+export function recordSplashShown(nowMs = Date.now()): void {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(SPLASH_STORAGE_KEY, String(nowMs))
+    }
+  } catch {
+    // ignore
+  }
+}
+
+/** Barra de status discreta no topo do painel. */
 export function Statusline() {
   const syncStatus = useSyncStatus()
   const pending = useLiveQuery(() => db.outbox.count(), [], 0)
-  const lockConfig = useLiveQuery(() => getLockConfig(), [])
-  const [locked, setLocked] = useState(() => getLockedState())
   const [online, setOnline] = useState(() => (typeof navigator !== 'undefined' ? navigator.onLine !== false : true))
   const [clock, setClock] = useState(() => fmtClock())
 
   useEffect(() => {
-    const unsubLock = subscribeLockedState(setLocked)
     const onOnline = () => setOnline(true)
     const onOffline = () => setOnline(false)
     window.addEventListener('online', onOnline)
     window.addEventListener('offline', onOffline)
     const timer = window.setInterval(() => setClock(fmtClock()), 15_000)
     return () => {
-      unsubLock()
       window.removeEventListener('online', onOnline)
       window.removeEventListener('offline', onOffline)
       window.clearInterval(timer)
     }
   }, [])
 
-  let syncIndicator: { dot: string; label: string; cls: string }
+  let syncLabel: string
+  let syncCls = 'muted'
   if (!online) {
-    syncIndicator = { dot: '○', label: 'offline', cls: 'muted' }
+    syncLabel = 'offline'
   } else if (!syncStatus.user) {
-    syncIndicator = pending > 0 ? { dot: '○', label: `pending (${pending})`, cls: 'amber' } : { dot: '○', label: 'local', cls: 'muted' }
+    syncLabel = pending > 0 ? `${pending} pendente(s)` : 'local'
   } else if (syncStatus.syncing || pending > 0) {
-    syncIndicator = { dot: '○', label: pending > 0 ? `pending (${pending})` : 'pending', cls: 'amber' }
+    syncLabel = pending > 0 ? `sincronizando (${pending})` : 'sincronizando'
+    syncCls = 'amber'
   } else {
-    syncIndicator = { dot: '●', label: 'synced', cls: 'green' }
+    syncLabel = 'sincronizado'
+    syncCls = 'green'
   }
-
-  const isLockedNow = Boolean(lockConfig?.enabled && locked)
-  const lockIndicator = isLockedNow
-    ? { dot: '●', label: 'locked', cls: 'amber' }
-    : { dot: '○', label: 'unlocked', cls: lockConfig?.enabled ? 'green' : 'muted' }
 
   return (
     <div className="statusline" role="status" aria-label="Status do sistema">
       <div className="statusline-seg">
-        <span className="branch">main</span>
-        <span className="sep">│</span>
-        <span className="muted">v{APP_VERSION}</span>
+        <span className={`sync-pill ${syncCls}`}>{syncLabel}</span>
       </div>
       <div className="statusline-seg">
-        <span className={`sync-pill ${lockIndicator.cls}`} aria-label="Estado da tranca">
-          <span className="status-dot" aria-hidden="true">{lockIndicator.dot}</span> {lockIndicator.label}
-        </span>
-        <span className={`sync-pill ${syncIndicator.cls}`}>
-          <span className="status-dot" aria-hidden="true">{syncIndicator.dot}</span> {syncIndicator.label}
-        </span>
-        <span className="sep">│</span>
-        <span>{clock}</span>
+        <span className="muted" style={{ fontFamily: 'var(--mono)' }}>{clock}</span>
       </div>
     </div>
   )
 }
 
-/** Título em formato de prompt de comando (ex.: "~/treino $") com gatilho implícito de Configurações no topo. */
+/**
+ * Cabeçalho editorial da página:
+ * Caminho `~/aba` discreto em fonte pequena acima do título direto em serifa (`Newsreader`),
+ * com gatilho implícito de Configurações à direita e efeito Liquid Glass reduzido ao rolar.
+ */
 export function PromptTitle({
   path,
+  title,
   rightSlot,
 }: {
   path: string
+  title?: string
   rightSlot?: ReactNode
 }) {
   const { isConfigActive, hasConfigAlert, onToggleConfig } = useContext(ChromeNavContext)
+  const resolvedTitle = title ?? PATH_TITLES[path] ?? path.replace(/^~\//, '')
 
   return (
-    <div className="prompt-header-bar">
-      <h1 className="prompt-title">
-        <span>{path}</span> <span className="prompt-dollar">$</span>
-        <span className="prompt-cursor" aria-hidden="true" />
-      </h1>
+    <header className="prompt-header-bar">
+      <div className="prompt-heading-group">
+        <span className="prompt-path">{path}</span>
+        <h1 className="prompt-title">{resolvedTitle}</h1>
+      </div>
       <div className="prompt-header-actions">
         {rightSlot}
         {onToggleConfig && (
@@ -124,14 +211,13 @@ export function PromptTitle({
           </button>
         )}
       </div>
-    </div>
+    </header>
   )
 }
 
 /**
- * Tela de bloqueio com cara de terminal:
- * "$ auth --biometric", botão "$ desbloquear" (chamada WebAuthn por toque do usuário)
- * e reserva por PIN de 4 a 6 dígitos com atraso crescente após tentativas incorretas.
+ * Tela de bloqueio sóbria e contida:
+ * WebAuthn / Face ID por toque do usuário e reserva por PIN de 4 a 6 dígitos.
  */
 export function LockScreen({
   config,
@@ -223,23 +309,23 @@ export function LockScreen({
   return (
     <div className="lock-screen" role="dialog" aria-label="Tela de bloqueio">
       <div className="lock-panel stack">
-        <div className="muted small"># session locked · ● locked</div>
-        <div className="lock-cmd">$ auth --biometric</div>
+        <div className="prompt-path">~/seguranca</div>
+        <div className="lock-cmd">Sessão bloqueada</div>
         {error && <div className="lock-err">{error}</div>}
         <button className="primary block" disabled={busy} onClick={() => void handleBiometric()}>
-          {busy ? 'verificando…' : 'desbloquear'}
+          {busy ? 'Verificando…' : 'Desbloquear'}
         </button>
 
         {!showPin && config.pinHash && (
           <button className="ghost small block" onClick={() => setShowPin(true)}>
-            usar PIN de reserva
+            Usar PIN de reserva
           </button>
         )}
 
         {showPin && config.pinHash && (
           <div className="stack" style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--border)' }}>
             <label className="f">
-              pin de reserva (4–6 dígitos)
+              PIN de reserva (4–6 dígitos)
               <input
                 type="password"
                 inputMode="numeric"
@@ -255,7 +341,7 @@ export function LockScreen({
               disabled={busy || waitSec > 0 || pin.length < 4}
               onClick={() => void handlePin()}
             >
-              {waitSec > 0 ? `aguarde ${waitSec}s…` : 'autenticar com PIN'}
+              {waitSec > 0 ? `Aguarde ${waitSec}s…` : 'Confirmar PIN'}
             </button>
           </div>
         )}
@@ -265,19 +351,33 @@ export function LockScreen({
 }
 
 /**
- * Sequência de boot leve (máx. 600ms, pulável com um toque) apenas na abertura a frio,
- * exibindo etapas reais do carregamento sem atrasar a abertura.
+ * Tela de abertura (Splash de Saudação Contextual em Newsreader):
+ * Fundo escuro #0B0D11, frase curta e seca por horário com o nome do usuário,
+ * fade-in → pausa → fade-out (~2.4s no total, ou corte seco com prefers-reduced-motion),
+ * pulável imediatamente com um toque enquanto o app carrega por baixo.
  */
-export function BootOverlay({ lines, onSkip }: { lines: string[]; onSkip: () => void }) {
+export function BootOverlay({
+  userName,
+  fadingOut,
+  onSkip,
+}: {
+  lines?: string[]
+  userName?: string | null
+  fadingOut?: boolean
+  onSkip: () => void
+}) {
+  const [{ phrase, meta }] = useState(() => getContextualGreeting(new Date(), userName))
+
   return (
-    <div className="boot-overlay" onClick={onSkip} role="status" aria-label="Inicializando">
-      <div className="boot-box">
-        <div className="muted small"># boot sequence (toque para pular)</div>
-        {lines.map((l, i) => (
-          <div key={i} className="boot-line">
-            {l}
-          </div>
-        ))}
+    <div
+      className={`splash-overlay${fadingOut ? ' fading-out' : ''}`}
+      onClick={onSkip}
+      role="status"
+      aria-label="Saudação inicial"
+    >
+      <div className="splash-inner">
+        <p className="splash-greeting">{phrase}</p>
+        <div className="splash-meta">{meta}</div>
       </div>
     </div>
   )

@@ -20,8 +20,8 @@ export default function Treino() {
   const [sub, setSub] = useState<Sub>('painel')
   return (
     <>
-      <Statusline />
       <PromptTitle path="~/treino" />
+      <Statusline />
       <Seg<Sub>
         value={sub}
         onChange={setSub}
@@ -108,7 +108,7 @@ function Painel() {
           <h2>rotinas</h2>
           {routines.map((r) => (
             <button key={r.id} className="block" style={{ marginBottom: 6, textAlign: 'left' }} onClick={() => start(r)}>
-              ./{r.name.toLowerCase().replace(/\s+/g, '-')} <span className="muted">({r.exerciseIds.length} ex)</span>
+              {r.name} <span className="muted">· {r.exerciseIds.length} ex</span>
             </button>
           ))}
         </>
@@ -121,7 +121,7 @@ function Painel() {
         ))}
       </div>
 
-      <h2>git log</h2>
+      <h2>sessões recentes</h2>
       <CommitLog limit={12} />
     </>
   )

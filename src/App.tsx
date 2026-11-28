@@ -28,6 +28,8 @@ import {
   ChromeNavContext,
   LockScreen,
   PromptTitle,
+  recordSplashShown,
+  shouldShowSplashOnColdStart,
 } from './components/TerminalChrome'
 import { useUi } from './components/ui'
 import {
@@ -68,7 +70,8 @@ const TAB_LABELS: Record<Tab, string> = {
   config: 'Configurações (~/config)',
 }
 const WEEK = 7 * 24 * 3600 * 1000
-const BOOT_MAX_MS = 520
+const SPLASH_HOLD_MS = 1950
+const SPLASH_FADEOUT_MS = 520
 
 export default function App() {
   const { toast } = useUi()
@@ -84,7 +87,12 @@ export default function App() {
     return 'treino'
   })
   const [lastNonConfigTab, setLastNonConfigTab] = useState<Tab>('treino')
-  const [bootVisible, setBootVisible] = useState(true)
+  const [bootVisible, setBootVisible] = useState<boolean>(() => {
+    const show = shouldShowSplashOnColdStart(Date.now())
+    if (show) recordSplashShown(Date.now())
+    return show
+  })
+  const [bootFading, setBootFading] = useState<boolean>(false)
   const [bootLines, setBootLines] = useState<string[]>(['> loading db...'])
   const [locked, setLocked] = useState<boolean>(true)
   const [hasUnlockedThisSession, setHasUnlockedThisSession] = useState<boolean>(false)
@@ -130,7 +138,25 @@ export default function App() {
   }
 
   useEffect(() => {
-    const timer = window.setTimeout(() => setBootVisible(false), BOOT_MAX_MS)
+    const reducedMotion =
+      typeof window !== 'undefined' &&
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches
+
+    const fadeTimer = window.setTimeout(
+      () => {
+        if (reducedMotion) {
+          setBootVisible(false)
+        } else {
+          setBootFading(true)
+        }
+      },
+      reducedMotion ? 1400 : SPLASH_HOLD_MS,
+    )
+    const hideTimer = window.setTimeout(
+      () => setBootVisible(false),
+      reducedMotion ? 1400 : SPLASH_HOLD_MS + SPLASH_FADEOUT_MS,
+    )
     ;(async () => {
       try {
         await db.open()
@@ -160,7 +186,10 @@ export default function App() {
         setError(String((e as Error)?.message ?? e))
       }
     })()
-    return () => window.clearTimeout(timer)
+    return () => {
+      window.clearTimeout(fadeTimer)
+      window.clearTimeout(hideTimer)
+    }
   }, [])
 
   useEffect(() => {
@@ -280,7 +309,14 @@ export default function App() {
     if (locked && lockConfig.enabled) {
       return <LockScreen config={lockConfig} onUnlocked={handleUnlocked} />
     }
-    return bootVisible ? <BootOverlay lines={bootLines} onSkip={() => setBootVisible(false)} /> : null
+    return bootVisible ? (
+      <BootOverlay
+        lines={bootLines}
+        userName={syncStatus.user?.displayName}
+        fadingOut={bootFading}
+        onSkip={() => setBootVisible(false)}
+      />
+    ) : null
   }
 
   if (locked && lockConfig.enabled && !hasUnlockedThisSession) {
@@ -335,7 +371,14 @@ export default function App() {
       }}
     >
       <div className="app">
-        {bootVisible && !isCurrentlyLocked && <BootOverlay lines={bootLines} onSkip={() => setBootVisible(false)} />}
+        {bootVisible && !isCurrentlyLocked && (
+          <BootOverlay
+            lines={bootLines}
+            userName={syncStatus.user?.displayName}
+            fadingOut={bootFading}
+            onSkip={() => setBootVisible(false)}
+          />
+        )}
         {isCurrentlyLocked && (
           <LockScreen config={lockConfig} onUnlocked={handleUnlocked} />
         )}
@@ -349,20 +392,22 @@ export default function App() {
               {lastBackup ? `Backup há ${days}d` : 'Sem backup exportado'} · exportar agora
             </div>
           )}
-          {tab === 'treino' && <Treino />}
-          {tab === 'dieta' && <Dieta />}
-          {tab === 'corpo' && <Corpo />}
-          {tab === 'assistente' && <Assistente />}
-          {tab === 'noticias' && (
-            <Noticias
-              items={noticiasItems}
-              loading={noticiasLoading}
-              error={noticiasError}
-              onManualRefresh={refreshNoticiasManual}
-            />
-          )}
-          {tab === 'onibus' && <Onibus />}
-          {tab === 'config' && <Config />}
+          <div key={tab} className="tab-view-enter">
+            {tab === 'treino' && <Treino />}
+            {tab === 'dieta' && <Dieta />}
+            {tab === 'corpo' && <Corpo />}
+            {tab === 'assistente' && <Assistente />}
+            {tab === 'noticias' && (
+              <Noticias
+                items={noticiasItems}
+                loading={noticiasLoading}
+                error={noticiasError}
+                onManualRefresh={refreshNoticiasManual}
+              />
+            )}
+            {tab === 'onibus' && <Onibus />}
+            {tab === 'config' && <Config />}
+          </div>
         </main>
         <nav
           ref={navRef}

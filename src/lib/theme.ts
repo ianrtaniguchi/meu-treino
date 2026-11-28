@@ -5,9 +5,9 @@ export type AppTheme = 'dark' | 'light' | 'baby'
 export const THEME_STORAGE_KEY = 'meu-treino-theme'
 
 export const THEME_META_COLORS: Record<AppTheme, string> = {
-  dark: '#0d1117',
-  light: '#f4f6f9',
-  baby: '#fff3f7',
+  dark: '#0b0d11',
+  light: '#f5f4f0',
+  baby: '#faf2f5',
 }
 
 export const THEME_OPTIONS: Array<{
@@ -19,24 +19,24 @@ export const THEME_OPTIONS: Array<{
 }> = [
   {
     id: 'dark',
-    label: 'Dark',
-    subtitle: 'terminal escuro · verde',
-    bgPreview: '#0d1117',
-    accentPreview: '#39d353',
+    label: 'Obsidian',
+    subtitle: 'noturno frio · ouro fosco',
+    bgPreview: '#0b0d11',
+    accentPreview: '#b89b5e',
   },
   {
     id: 'light',
-    label: 'Claro',
-    subtitle: 'grafite suave · esmeralda',
-    bgPreview: '#f4f6f9',
-    accentPreview: '#15803d',
+    label: 'Editorial',
+    subtitle: 'papel quente · bronze',
+    bgPreview: '#f5f4f0',
+    accentPreview: '#8c6d32',
   },
   {
     id: 'baby',
-    label: 'Baby',
-    subtitle: 'rosa bebê · pastel glass',
-    bgPreview: '#fff3f7',
-    accentPreview: '#d94e82',
+    label: 'Quartzo',
+    subtitle: 'rosa sóbrio · champanhe',
+    bgPreview: '#faf2f5',
+    accentPreview: '#b55d7a',
   },
 ]
 

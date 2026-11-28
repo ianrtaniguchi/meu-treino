@@ -53,20 +53,20 @@ export default function Onibus() {
 
   return (
     <div>
+      <PromptTitle path="~/onibus" />
+
       <div className="statusline">
         <div className="statusline-seg">
-          <span className="branch">ceturb-es / transcol</span>
-          <span className="sep">•</span>
+          <span className="muted">Ceturb-ES · Transcol</span>
+          <span className="sep">·</span>
           <span className="muted">{lines.length} linhas</span>
         </div>
         <div className="statusline-seg">
           <span className="sync-pill">
-            ★ {favoriteIds.length} {favoriteIds.length === 1 ? 'favorita' : 'favoritas'}
+            {favoriteIds.length} {favoriteIds.length === 1 ? 'favorita' : 'favoritas'}
           </span>
         </div>
       </div>
-
-      <PromptTitle path="~/onibus" />
 
       {/* 3 Sub-abas internas da seção de Transporte Público */}
       <div className="tabs" role="tablist" aria-label="Seções de Transporte Público">

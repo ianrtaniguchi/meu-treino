@@ -349,14 +349,14 @@ export default function Assistente() {
               key={m.id}
               className="card stack"
               style={{
-                borderColor: m.role === 'user' ? 'var(--border)' : 'rgba(57, 211, 83, 0.35)',
+                borderColor: m.role === 'user' ? 'var(--border)' : 'var(--btn-primary-border)',
               }}
             >
               <div className="row between">
                 <b className={m.role === 'user' ? 'muted small' : 'green small'}>
-                  {m.role === 'user' ? '$ você' : '> assistente'}
+                  {m.role === 'user' ? 'Você' : 'Assistente'}
                 </b>
-                <span className="muted small">
+                <span className="muted small" style={{ fontFamily: 'var(--mono)' }}>
                   {new Date(m.createdAt).toLocaleTimeString('pt-BR', {
                     hour: '2-digit',
                     minute: '2-digit',
