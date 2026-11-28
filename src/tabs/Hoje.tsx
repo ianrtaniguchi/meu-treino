@@ -1,13 +1,15 @@
 import { useLiveQuery } from 'dexie-react-hooks'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { OWNER_UID } from '../assistantConfig'
-import { db } from '../data/db'
+import { db, setSetting } from '../data/db'
+import { DEFAULT_GOALS } from '../data/seed'
 import { useSetting, useSyncStatus } from '../hooks'
 import { getContextualGreeting, PromptTitle } from '../components/TerminalChrome'
 import Icon, { type IconName } from '../components/Icons'
 import { countUnreadNoticias, type IfesNoticia } from '../lib/notifications'
 import { getFavoriteLineIds } from '../services/ceturbService'
 import { today, dayTotals, fmtNum } from '../data/stats'
+import type { Goals } from '../data/types'
 
 export interface TodayModuleDef {
   id: string
@@ -78,7 +80,7 @@ export default function Hoje({
 }) {
   const syncStatus = useSyncStatus()
   const profileName = useSetting<string>('profileName', '')
-  const goals = useSetting('goals', { p: 160, c: 250, f: 70, e: 2500 })
+  const goals = useSetting<Goals>('goals', DEFAULT_GOALS) ?? DEFAULT_GOALS
   const { config } = useTodayModulesConfig()
 
   const resolvedGreetingName = (() => {
@@ -196,8 +198,8 @@ export default function Hoje({
                 {mod.id === 'dieta' && (
                   <div className="stack" style={{ marginTop: 6 }}>
                     <div className="row between small">
-                      <span>Calorias: <b>{fmtNum(totals.kcal)}</b> / {goals.e} kcal</span>
-                      <span>Prot: <b>{fmtNum(totals.protein)}g</b> / {goals.p}g</span>
+                      <span>Calorias: <b>{fmtNum(totals.kcal)}</b> / {goals.kcal} kcal</span>
+                      <span>Prot: <b>{fmtNum(totals.p)}g</b> / {goals.p}g</span>
                     </div>
                   </div>
                 )}

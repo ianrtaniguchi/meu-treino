@@ -1,5 +1,5 @@
 import { useLiveQuery } from 'dexie-react-hooks'
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
 import { OWNER_UID } from './assistantConfig'
 import { autoSnapshotIfDue } from './data/backup'
 import { db, setSetting } from './data/db'
@@ -41,7 +41,6 @@ import {
   ChromeNavContext,
   LockScreen,
   PromptTitle,
-  getContextualGreeting,
   type FitnessSection,
 } from './components/TerminalChrome'
 import { useUi } from './components/ui'
