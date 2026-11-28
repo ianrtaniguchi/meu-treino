@@ -48,7 +48,7 @@ export function getContextualGreeting(now = new Date(), rawName?: string | null)
   phrase: string
   meta: string
 } {
-  const firstName = (rawName ?? '').trim().split(/\s+/)[0] || 'Ian'
+  const firstName = (rawName ?? '').trim().split(/\s+/)[0] || 'Atleta'
   const h = now.getHours()
   const dayNames = ['domingo', 'segunda-feira', 'terça-feira', 'quarta-feira', 'quinta-feira', 'sexta-feira', 'sábado']
   const weekday = dayNames[now.getDay()] ?? ''
@@ -366,7 +366,8 @@ export function BootOverlay({
   fadingOut?: boolean
   onSkip: () => void
 }) {
-  const [{ phrase, meta }] = useState(() => getContextualGreeting(new Date(), userName))
+  const [openedAt] = useState(() => new Date())
+  const { phrase, meta } = getContextualGreeting(openedAt, userName)
 
   return (
     <div

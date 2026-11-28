@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { buildBackup, importBackup } from '../src/data/backup'
 import { db, runApplyingRemote, SYNCABLE_SETTINGS } from '../src/data/db'
 import { ensureSeed } from '../src/data/seed'
+import { OWNER_UID } from '../src/assistantConfig'
 import {
   applyConfirmedDraft,
   ASSISTANT_HISTORY_KEY,
@@ -14,6 +15,8 @@ import {
   confirmCalendarCard,
   executeAssistantTool,
   extractFinalAssistantContent,
+  getAssistantToolsForUser,
+  isCurrentUserOwner,
   loadAssistantHistory,
   saveAssistantHistory,
   sendAssistantTurn,
@@ -626,5 +629,25 @@ describe('Assistente de IA no App (ferramentas, rascunhos, privacidade e isolame
     expect(text).toBe('Como foi minha semana de treino?')
     expect(sentUrl).toBe('https://meu-worker.workers.dev/transcribe')
     expect(sentFile?.name).toBe('gravacao.m4a')
+  })
+
+  it('oculta ferramentas e instruções do Google Calendar para contas secundárias (uid !== OWNER_UID)', () => {
+    expect(isCurrentUserOwner(OWNER_UID)).toBe(true)
+    expect(isCurrentUserOwner('uid-namorada-002')).toBe(false)
+
+    const ownerTools = getAssistantToolsForUser(OWNER_UID).map((t) => t.function.name)
+    expect(ownerTools).toContain('criar_evento')
+    expect(ownerTools).toContain('listar_eventos')
+
+    const secondaryTools = getAssistantToolsForUser('uid-namorada-002').map((t) => t.function.name)
+    expect(secondaryTools).not.toContain('criar_evento')
+    expect(secondaryTools).not.toContain('listar_eventos')
+    expect(secondaryTools).not.toContain('editar_evento')
+    expect(secondaryTools).not.toContain('apagar_evento')
+    expect(secondaryTools).toContain('propose_meal')
+    expect(secondaryTools).toContain('create_push_reminder')
+
+    const secondaryPrompt = buildSystemPrompt(new Date(2026, 10, 16, 9, 0, 0), 'uid-namorada-002')
+    expect(secondaryPrompt).not.toContain('Google Calendar')
   })
 })

@@ -1,4 +1,4 @@
-import { ASSISTANT_WORKER_URL } from '../assistantConfig'
+import { ASSISTANT_WORKER_URL, OWNER_UID } from '../assistantConfig'
 import { db, getRawRecord, getSetting, runApplyingRemote, uid } from '../data/db'
 import { DEFAULT_GOALS } from '../data/seed'
 import { addDays, dayTotals, exerciseHistory, movingAverage, parseDate, personalRecord, setLabel, today, totalVolume } from '../data/stats'
@@ -52,17 +52,61 @@ export function formatLocalTimeZone(now = new Date()): string {
   return tzName ? `${tzName} (${utcLabel})` : utcLabel
 }
 
+export const CALENDAR_TOOL_NAMES = new Set([
+  'criar_evento',
+  'listar_eventos',
+  'editar_evento',
+  'apagar_evento',
+])
+
 /**
- * Monta o prompt de sistema incluindo o fuso horário e a data local atual do aparelho
- * calculada pela mesma função `today(now)` usada pelo painel principal e heatmap.
+ * Verifica se o usuário autenticado atual é o proprietário (`OWNER_UID`).
+ * Para qualquer outro `uid` autenticado, as ferramentas do Google Calendar ficam desativadas e ocultas.
  */
-export function buildSystemPrompt(now = new Date()): string {
+export function isCurrentUserOwner(explicitUid?: string | null): boolean {
+  if (typeof explicitUid === 'string' && explicitUid.trim()) {
+    return explicitUid.trim() === OWNER_UID
+  }
+  const syncUid = getSyncStatus().user?.uid?.trim()
+  if (syncUid) {
+    return syncUid === OWNER_UID
+  }
+  try {
+    const authUid = getFirebaseAuth().currentUser?.uid?.trim()
+    if (authUid) {
+      return authUid === OWNER_UID
+    }
+  } catch {
+    // ambiente de teste sem Firebase Auth inicializado
+  }
+  return true
+}
+
+const CALENDAR_SYSTEM_PROMPT_PARAGRAPH =
+  'Agenda (Google Calendar): você também gerencia a agenda do usuário no fuso America/Sao_Paulo (usando a data e hora atuais informadas abaixo) com as ferramentas criar_evento, editar_evento, listar_eventos e apagar_evento. Use duração padrão de 1h quando o término não for informado, pergunte ao usuário se faltar data ou hora para criar um evento, e extraia automaticamente título, data, horário, local e descrição de e-mails e convites colados na conversa (lembrando que editar e apagar exigem confirmação pelo botão Confirmar).'
+
+const PUSH_REMINDERS_OWNER_PARAGRAPH =
+  'Lembretes Push (Notificações Web Push via FCM): você também cria, lista e cancela lembretes de notificação push no fuso America/Sao_Paulo usando create_push_reminder, list_push_reminders e cancel_push_reminder. Diferencie claramente: quando o usuário pedir para agendar um evento ou compromisso na agenda, use as ferramentas do Google Calendar (criar_evento); quando o usuário pedir para lembrar, mandar notificação ou avisar por push (ex.: "me lembra às 18h de ir pro Jiu-Jitsu", "manda um push amanhã às 7h30 pra tomar creatina"), use create_push_reminder (somente Web Push, sem criar evento no Google Calendar).'
+
+const PUSH_REMINDERS_SECONDARY_PARAGRAPH =
+  'Lembretes Push (Notificações Web Push via FCM): você também cria, lista e cancela lembretes de notificação push no fuso America/Sao_Paulo usando create_push_reminder, list_push_reminders e cancel_push_reminder quando o usuário pedir para lembrar, mandar notificação ou avisar por push (ex.: "me lembra às 18h de treinar", "manda um push amanhã às 7h30 pra tomar creatina").'
+
+/**
+ * Monta o prompt de sistema incluindo o fuso horário e a data local atual do aparelho.
+ * Remove qualquer menção ao Google Calendar quando o usuário não é o `OWNER_UID`.
+ */
+export function buildSystemPrompt(now = new Date(), explicitUid?: string | null): string {
   const localToday = today(now)
   const weekday = WEEKDAYS_PT[parseDate(localToday).getDay()] ?? ''
   const hh = String(now.getHours()).padStart(2, '0')
   const mm = String(now.getMinutes()).padStart(2, '0')
   const tz = formatLocalTimeZone(now)
-  return `${SYSTEM_PROMPT}
+  const basePrompt = isCurrentUserOwner(explicitUid)
+    ? SYSTEM_PROMPT
+    : SYSTEM_PROMPT.replace(CALENDAR_SYSTEM_PROMPT_PARAGRAPH, '')
+        .replace(PUSH_REMINDERS_OWNER_PARAGRAPH, PUSH_REMINDERS_SECONDARY_PARAGRAPH)
+        .replace(/\n{3,}/g, '\n\n')
+  return `${basePrompt}
 
 Data e fuso horário locais do aparelho neste momento:
 - Data local atual ("hoje"): ${localToday} (${weekday})
@@ -648,13 +692,6 @@ export interface ExecuteToolRuntimeOptions {
   getToken?: () => Promise<string | null>
   workerUrl?: string
 }
-
-const CALENDAR_TOOL_NAMES = new Set([
-  'criar_evento',
-  'editar_evento',
-  'listar_eventos',
-  'apagar_evento',
-])
 
 const REMINDER_TOOL_NAMES = new Set([
   'create_push_reminder',
@@ -1370,6 +1407,19 @@ export interface SendAssistantOptions {
   getToken?: () => Promise<string | null>
   workerUrl?: string
   now?: Date
+  userUid?: string | null
+}
+
+/**
+ * Retorna a lista de ferramentas disponíveis para o usuário:
+ * - Proprietário (`OWNER_UID`): todas as ferramentas (incluindo Google Calendar).
+ * - Contas secundárias: todas as ferramentas de treino, dieta, corpo e lembretes push, SEM Google Calendar.
+ */
+export function getAssistantToolsForUser(explicitUid?: string | null): ToolDefinition[] {
+  if (isCurrentUserOwner(explicitUid)) {
+    return ASSISTANT_TOOLS
+  }
+  return ASSISTANT_TOOLS.filter((t) => !CALENDAR_TOOL_NAMES.has(t.function.name))
 }
 
 async function defaultGetIdToken(): Promise<string | null> {
@@ -1425,10 +1475,11 @@ export async function sendAssistantTurn(
   }))
 
   const apiMessages: ApiMessage[] = [
-    { role: 'system', content: buildSystemPrompt(now) },
+    { role: 'system', content: buildSystemPrompt(now, options.userUid) },
     ...recentContext,
     { role: 'user', content: userText },
   ]
+  const activeTools = getAssistantToolsForUser(options.userUid)
 
   const dataSentLabels: string[] = ['mensagem da conversa']
   const collectedDrafts: AssistantDraft[] = []
@@ -1447,7 +1498,7 @@ export async function sendAssistantTurn(
         },
         body: JSON.stringify({
           messages: apiMessages,
-          tools: ASSISTANT_TOOLS,
+          tools: activeTools,
           tool_choice: 'auto',
           temperature: 0.3,
           max_tokens: 800,

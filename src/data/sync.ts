@@ -165,6 +165,8 @@ export interface FirstLoginPreview {
   local: SyncSideCounts
   cloud: SyncSideCounts
   remoteRecords: CloudRecord[]
+  needsProfileName?: boolean
+  existingProfileName?: string
 }
 
 export async function getLocalCounts(): Promise<SyncSideCounts> {
@@ -219,22 +221,83 @@ export async function markUidSynced(uid: string): Promise<void> {
   })
 }
 
+export async function resolveExistingProfileName(
+  remoteRecords: CloudRecord[],
+): Promise<string> {
+  const remoteSetting = remoteRecords.find(
+    (r) => !r.deleted && r.table === 'settings' && r.pk === 'profileName',
+  )
+  const remoteVal =
+    typeof remoteSetting?.payload?.value === 'string'
+      ? remoteSetting.payload.value.trim()
+      : ''
+  if (remoteVal) return remoteVal
+
+  const localRow = await getRawRecord<{ key: string; value: unknown; deleted?: boolean }>(
+    'settings',
+    'profileName',
+  )
+  const localVal =
+    localRow && !localRow.deleted && typeof localRow.value === 'string'
+      ? localRow.value.trim()
+      : ''
+  return localVal
+}
+
 /**
- * Verifica se este login requer confirmação do usuário antes de mesclar:
- * se o aparelho nunca sincronizou com este `uid` E já possui dados locais registrados,
- * retorna um `FirstLoginPreview` para exibir a prévia (local vs. nuvem) e perguntar se deseja enviar/mesclar.
+ * Verifica se este login requer confirmação do usuário antes de mesclar ou se precisa pedir o `profileName`:
+ * - Se o aparelho nunca sincronizou com este `uid` E já possui dados locais registrados, exibe a prévia (local vs. nuvem).
+ * - Se `options.promptIfMissingProfileName` for true e a conta ainda não tiver `profileName` salvo (nem local nem na nuvem),
+ *   também retorna o `FirstLoginPreview` para pedir o nome da saudação no primeiro login.
  */
-export async function checkFirstLoginState(uid: string): Promise<FirstLoginPreview | null> {
+export async function checkFirstLoginState(
+  uid: string,
+  options: { promptIfMissingProfileName?: boolean } = {},
+): Promise<FirstLoginPreview | null> {
   const already = await hasSyncedUidBefore(uid)
-  if (already) return null
-  const local = await getLocalCounts()
   const remoteRecords = await activeAdapter.fetchAll(uid)
-  const cloud = getCloudCounts(remoteRecords)
-  if (local.totalUserItems === 0) {
-    // Sem dados locais: pode baixar da nuvem diretamente sem risco de sobrescrever dados locais
+  const existingProfileName = await resolveExistingProfileName(remoteRecords)
+  const needsProfileName = !existingProfileName
+
+  if (already) {
+    if (options.promptIfMissingProfileName && needsProfileName) {
+      const local = await getLocalCounts()
+      const cloud = getCloudCounts(remoteRecords)
+      return {
+        uid,
+        local,
+        cloud,
+        remoteRecords,
+        needsProfileName: true,
+        existingProfileName: '',
+      }
+    }
     return null
   }
-  return { uid, local, cloud, remoteRecords }
+
+  const local = await getLocalCounts()
+  const cloud = getCloudCounts(remoteRecords)
+  if (local.totalUserItems === 0) {
+    if (options.promptIfMissingProfileName && needsProfileName) {
+      return {
+        uid,
+        local,
+        cloud,
+        remoteRecords,
+        needsProfileName: true,
+        existingProfileName: '',
+      }
+    }
+    return null
+  }
+  return {
+    uid,
+    local,
+    cloud,
+    remoteRecords,
+    needsProfileName,
+    existingProfileName,
+  }
 }
 
 /** Enfileira todos os registros locais sincronizáveis no outbox (para o primeiro envio à nuvem). */
@@ -513,7 +576,7 @@ export async function triggerBackgroundSync(pushOnly = false): Promise<void> {
       await flushOutbox(u.uid)
       await saveLastSyncAt(Date.now())
     } else {
-      const preview = await checkFirstLoginState(u.uid)
+      const preview = await checkFirstLoginState(u.uid, { promptIfMissingProfileName: true })
       if (preview) {
         setStatus({ syncing: false, firstLoginPreview: preview })
         return
@@ -681,12 +744,23 @@ export async function authResetPassword(email: string): Promise<void> {
   await sendPasswordResetEmail(auth, email.trim())
 }
 
-export async function resolveFirstLoginChoice(sendLocal: boolean): Promise<void> {
+export async function resolveFirstLoginChoice(
+  sendLocal: boolean,
+  profileNameInput?: string,
+): Promise<void> {
   const preview = currentStatus.firstLoginPreview
   if (!preview) return
   setStatus({ syncing: true, error: null })
   try {
+    const cleanName = (profileNameInput ?? '').trim()
+    if (cleanName) {
+      await db.settings.put({ key: 'profileName', value: cleanName })
+      await waitPendingOutbox()
+    }
     await completeFirstLoginMerge(preview.uid, sendLocal, preview.remoteRecords)
+    if (cleanName) {
+      await flushOutbox(preview.uid)
+    }
     setStatus({ syncing: false, firstLoginPreview: null, error: null })
   } catch {
     setStatus({ syncing: false, error: 'Não foi possível concluir a sincronização inicial.' })

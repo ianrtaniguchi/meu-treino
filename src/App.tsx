@@ -1,5 +1,6 @@
 import { useLiveQuery } from 'dexie-react-hooks'
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
+import { OWNER_UID } from './assistantConfig'
 import { autoSnapshotIfDue } from './data/backup'
 import { db, setSetting } from './data/db'
 import { ensureSeed } from './data/seed'
@@ -107,10 +108,24 @@ export default function App() {
   const onboarded = useSetting<boolean>('onboardingDone', false)
   const lastBackup = useSetting<number | null>('lastBackupAt', null)
   const firstUse = useSetting<number | null>('firstUseAt', null)
+  const profileNameSetting = useSetting<string>('profileName', '')
   const ifesReadIdsRaw = useSetting<string[]>('ifesReadIds', [])
   const ifesReadIds = Array.isArray(ifesReadIdsRaw) ? ifesReadIdsRaw : []
   const unreadNoticiasCount = countUnreadNoticias(noticiasItems, ifesReadIds)
   const syncStatus = useSyncStatus()
+
+  const resolvedGreetingName = (() => {
+    const custom = (profileNameSetting ?? '').trim()
+    if (custom) return custom
+    const display = (syncStatus.user?.displayName ?? '').trim()
+    if (display) return display
+    if (syncStatus.user?.uid === OWNER_UID) return 'Ian'
+    const emailPrefix = (syncStatus.user?.email ?? '').split('@')[0]?.trim()
+    if (emailPrefix) {
+      return emailPrefix.charAt(0).toUpperCase() + emailPrefix.slice(1)
+    }
+    return syncStatus.user ? 'Atleta' : 'Ian'
+  })()
   const lockConfig = useLiveQuery(() => getLockConfig(), [], {
     enabled: false,
     credentialId: null,
@@ -312,7 +327,7 @@ export default function App() {
     return bootVisible ? (
       <BootOverlay
         lines={bootLines}
-        userName={syncStatus.user?.displayName}
+        userName={resolvedGreetingName}
         fadingOut={bootFading}
         onSkip={() => setBootVisible(false)}
       />
@@ -374,7 +389,7 @@ export default function App() {
         {bootVisible && !isCurrentlyLocked && (
           <BootOverlay
             lines={bootLines}
-            userName={syncStatus.user?.displayName}
+            userName={resolvedGreetingName}
             fadingOut={bootFading}
             onSkip={() => setBootVisible(false)}
           />

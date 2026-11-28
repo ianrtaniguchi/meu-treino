@@ -323,4 +323,27 @@ describe('primeiro login com dados locais', () => {
     const snaps = await listSnapshots()
     expect(snaps.some((s) => s.reason.includes('Troca de conta'))).toBe(true)
   })
+
+  it('pede profileName no primeiro login quando promptIfMissingProfileName=true e o usuário ainda não tem nome salvo', async () => {
+    // Sem dados locais e sem profileName na nuvem: com promptIfMissingProfileName=true retorna preview pedindo o nome
+    const previewMissing = await checkFirstLoginState('user-sem-nome', {
+      promptIfMissingProfileName: true,
+    })
+    expect(previewMissing).not.toBeNull()
+    expect(previewMissing?.needsProfileName).toBe(true)
+
+    // Quando a nuvem já tem settings:profileName salvo, não precisa pedir de novo
+    await cloud.adapter.pushBatch('user-com-nome', [
+      toCloudRecord('settings', {
+        key: 'profileName',
+        value: 'Marina',
+        updatedAt: 1000,
+        deleted: false,
+      }),
+    ])
+    const previewHasName = await checkFirstLoginState('user-com-nome', {
+      promptIfMissingProfileName: true,
+    })
+    expect(previewHasName).toBeNull()
+  })
 })

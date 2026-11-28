@@ -74,6 +74,8 @@ export default function Config() {
   const [theme, setTheme] = useTheme()
   const lastBackup = useSetting<number | null>('lastBackupAt', null)
   const lastSyncAt = useSetting<number | null>('lastSyncAt', null)
+  const savedProfileName = useSetting<string>('profileName', '') ?? ''
+  const [profileNameDraft, setProfileNameDraft] = useState<string>('')
   const pendingOutbox = useLiveQuery(() => db.outbox.count(), [], 0)
   const syncStatus = useSyncStatus()
   const [persisted, setPersisted] = useState<boolean | null>(null)
@@ -275,6 +277,16 @@ export default function Config() {
     } finally {
       setNotifBusy(false)
     }
+  }
+
+  useEffect(() => {
+    setProfileNameDraft(savedProfileName)
+  }, [savedProfileName])
+
+  const saveProfileName = async () => {
+    const clean = profileNameDraft.trim()
+    await setSetting('profileName', clean)
+    toast(clean ? `Saudação atualizada para "${clean}"` : 'Nome da saudação redefinido')
   }
 
   const refreshStorage = async () => {
@@ -526,6 +538,27 @@ export default function Config() {
             <span className="chip" title={syncStatus.user.uid}>
               uid: {syncStatus.user.uid.slice(0, 6)}…
             </span>
+          </div>
+          <div className="row" style={{ alignItems: 'flex-end', gap: 8 }}>
+            <div className="grow">
+              <Field
+                label="nome na saudação"
+                type="text"
+                mode="text"
+                value={profileNameDraft}
+                onChange={setProfileNameDraft}
+                placeholder="Ex.: Ian, Ana, Carlos…"
+              />
+            </div>
+            <button
+              type="button"
+              className="small"
+              style={{ minHeight: 44 }}
+              disabled={profileNameDraft.trim() === savedProfileName.trim()}
+              onClick={() => void saveProfileName()}
+            >
+              salvar nome
+            </button>
           </div>
           <div className="row between">
             <span className="muted small">última sincronização</span>
