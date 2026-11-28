@@ -1151,7 +1151,7 @@ label.field > input, label.field > select, label.field > textarea { margin-top: 
   user-select: none;
   -webkit-user-select: none;
   opacity: 1;
-  transition: opacity 520ms cubic-bezier(0.22, 1, 0.36, 1);
+  transition: opacity 850ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 .splash-overlay.fading-out {
   opacity: 0;
