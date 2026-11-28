@@ -13,6 +13,7 @@ export const SYNCABLE_SETTINGS = new Set([
   'ifesReadIds',
   'profileName',
   'todayModulesConfig',
+  'faculdadeData',
 ])
 
 export const pkOf = (table: TableName) => (table === 'settings' ? 'key' : 'id')
