@@ -128,7 +128,7 @@ async function defaultGetIdToken(): Promise<string | null> {
 }
 
 function httpMessage(status: number, serverError?: string): string {
-  if (status === 401) return 'sessão expirada (401). Entre novamente em ~/config.'
+  if (status === 401) return 'sessão expirada (401). Entre novamente em Configurações.'
   if (status === 403) return 'acesso negado pelo proxy (403).'
   if (status === 413) return 'foto muito grande (413).'
   if (status === 429) return 'limite de requisições atingido (429). Tente em instantes.'
@@ -147,7 +147,7 @@ export async function analyzeMealPhoto(file: Blob, options: AnalyzeMealOptions =
     throw new MealAnalysisError('sem conexão com a internet.')
   }
   const token = await getToken()
-  if (!token) throw new MealAnalysisError('entre na sua conta em ~/config para usar a foto do prato.')
+  if (!token) throw new MealAnalysisError('entre na sua conta em Configurações para usar a foto do prato.')
 
   const image = await (options.prepareImage ?? ((f: Blob) => resizeImageToJpeg(f)))(file)
   if (!image || image.length > MAX_DATA_URL_CHARS) {

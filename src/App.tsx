@@ -256,7 +256,6 @@ export default function App() {
 
   useEffect(() => {
     if (initialSplashRef.current) {
-      recordSplashShown(Date.now())
       startSplash()
     }
     ;(async () => {
@@ -271,7 +270,11 @@ export default function App() {
           hideSplash()
         } else {
           setHasUnlockedThisSession(true)
-          if (!initialSplashRef.current) showSplashRef.current('cold-start')
+          if (initialSplashRef.current) {
+            recordSplashShown(Date.now())
+          } else {
+            showSplashRef.current('cold-start')
+          }
         }
         await ensureSeed()
         setBootLines(['> loading db... ok', '> storage.persist...'])

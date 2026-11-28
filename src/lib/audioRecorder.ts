@@ -293,7 +293,7 @@ export async function transcribeAudioClip(
 
   const token = await getToken()
   if (!token) {
-    throw new Error('error: entre na sua conta em ~/config para transcrever áudio.')
+    throw new Error('error: entre na sua conta em Configurações para transcrever áudio.')
   }
 
   const form = new FormData()

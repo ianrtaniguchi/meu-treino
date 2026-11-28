@@ -1430,7 +1430,7 @@ async function defaultGetIdToken(): Promise<string | null> {
 
 function mapHttpError(status: number, serverError?: string): string {
   if (status === 401) {
-    return 'error: sessão expirada ou não autenticada (401). Entre novamente na aba ~/config.'
+    return 'error: sessão expirada ou não autenticada (401). Entre novamente em Configurações.'
   }
   if (status === 403) {
     return 'error: acesso negado pelo proxy (403). Verifique ALLOWED_UID e ALLOWED_ORIGINS no Worker.'
@@ -1466,7 +1466,7 @@ export async function sendAssistantTurn(
 
   const token = await getToken()
   if (!token) {
-    throw new Error('error: você precisa estar logado na nuvem (~/config) para usar o assistente.')
+    throw new Error('error: você precisa estar logado na nuvem (Configurações) para usar o assistente.')
   }
 
   const recentContext = priorHistory.slice(-10).map<ApiMessage>((m) => ({
@@ -1612,7 +1612,7 @@ export async function cancelPushReminderCard(
   const baseUrl = (options.workerUrl ?? ASSISTANT_WORKER_URL).replace(/\/+$/, '')
   const token = await getToken()
   if (!token) {
-    throw new Error('error: entre na sua conta em ~/config para cancelar o lembrete.')
+    throw new Error('error: entre na sua conta em Configurações para cancelar o lembrete.')
   }
 
   const res = await fetcher(`${baseUrl}/chat`, {
@@ -1651,7 +1651,7 @@ export async function confirmCalendarCard(
   const baseUrl = (options.workerUrl ?? ASSISTANT_WORKER_URL).replace(/\/+$/, '')
   const token = await getToken()
   if (!token) {
-    throw new Error('error: entre na sua conta em ~/config para confirmar na agenda.')
+    throw new Error('error: entre na sua conta em Configurações para confirmar na agenda.')
   }
 
   const res = await fetcher(`${baseUrl}/chat`, {
