@@ -1,10 +1,17 @@
 import { ASSISTANT_WORKER_URL, OWNER_UID } from '../assistantConfig'
-import { db, getRawRecord, getSetting, runApplyingRemote, uid } from '../data/db'
+import { db, getRawRecord, getSetting, runApplyingRemote, setSetting, uid } from '../data/db'
 import { DEFAULT_GOALS } from '../data/seed'
 import { addDays, dayTotals, exerciseHistory, movingAverage, parseDate, personalRecord, setLabel, today, totalVolume } from '../data/stats'
 import { getFirebaseAuth, getSyncStatus } from '../data/sync'
 import type { BodyEntry, Exercise, Goals, Meal, MealItem, MealType, Routine, Session } from '../data/types'
 import { buildDays, prSetIds, streaks } from './panel'
+import {
+  EMPTY_FACULTY_DATA,
+  FACULDADE_SETTING_KEY,
+  type FacultyData,
+  type FacultyDeadline,
+} from './faculty'
+import { replaceFacultyDeadlineReminders } from './facultyReminders'
 
 /** Chave local-only na tabela settings para o histórico do chat (fora do backup e do Firestore). */
 export const ASSISTANT_HISTORY_KEY = 'assistantHistory'
@@ -16,12 +23,13 @@ Estrutura do app que você conhece:
 - Treinos (sessions): contêm exercícios de calistenia organizados em progressões por categoria (empurrar, puxar, paralelas/dips, muscle-up, front lever, planche, handstand, pernas, core). Cada série registra repetições ("reps") ou segundos ("time") + carga extra opcional em kg ("load") + RPE opcional.
 - Dieta (meals): refeições diárias separadas em "cafe", "almoco", "jantar" e "lanche", somando calorias (kcal), proteínas (p), carboidratos (c) e gorduras (g) comparadas às metas diárias.
 - Corpo (body): registro diário de peso (kg, com média móvel de 7 dias) e medidas em cm (cintura, braço, peito, etc.).
+- Faculdade: grade semanal, disciplinas, avaliações e prazos são dados pessoais do usuário. Use as ferramentas de Faculdade para listar prazos ou criar um prazo quando o pedido for explícito. Interprete "dia N" como a próxima ocorrência futura desse dia do mês. Para datas sem horário, use 23:59 e informe essa escolha; se a data continuar ambígua, pergunte antes de criar.
 
 Regras obrigatórias:
 1. Baseie suas análises EXCLUSIVAMENTE nos dados reais do usuário obtidos pelas ferramentas de leitura. Consulte as ferramentas antes de responder sobre evolução, volume, dieta ou peso.
 2. Quando não houver dados suficientes registrados no período, diga claramente que ainda não há registros suficientes — NUNCA invente números, séries, pesos ou calorias.
 3. NUNCA dê diagnóstico médico nem prescreva tratamento clínico. Se o usuário relatar dor aguda, lesão ou condição clínica, recomende consultar um médico, fisioterapeuta ou nutricionista.
-4. Você NÃO grava dados diretamente no banco. Quando o usuário pedir para registrar uma refeição, criar uma rotina de treino ou registrar peso/medidas, chame a ferramenta de proposta correspondente (propose_meal, propose_routine ou propose_body_weight) e avise que o rascunho foi gerado abaixo para ele conferir e confirmar.
+4. Para refeição, rotina de treino e peso/medidas, você NÃO grava dados diretamente: chame a ferramenta de proposta correspondente (propose_meal, propose_routine ou propose_body_weight) e avise que o rascunho foi gerado abaixo para ele conferir e confirmar. Para prazos de Faculdade, crie diretamente com a ferramenta de Faculdade quando o pedido do usuário for explícito.
 
 Agenda (Google Calendar): você também gerencia a agenda do usuário no fuso America/Sao_Paulo (usando a data e hora atuais informadas abaixo) com as ferramentas criar_evento, editar_evento, listar_eventos e apagar_evento. Use duração padrão de 1h quando o término não for informado, pergunte ao usuário se faltar data ou hora para criar um evento, e extraia automaticamente título, data, horário, local e descrição de e-mails e convites colados na conversa (lembrando que editar e apagar exigem confirmação pelo botão Confirmar).
 
@@ -543,6 +551,38 @@ export const ASSISTANT_TOOLS: ToolDefinition[] = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'create_faculty_deadline',
+      description: 'Cria uma prova, lista ou trabalho nos prazos pessoais de Faculdade do usuário e agenda lembretes push dois dias antes e no dia do prazo.',
+      parameters: {
+        type: 'object',
+        properties: {
+          courseName: { type: 'string', description: 'Nome da disciplina.' },
+          type: { type: 'string', enum: ['prova', 'lista', 'trabalho'] },
+          date: { type: 'string', description: 'Data local no formato AAAA-MM-DD.' },
+          time: { type: 'string', description: 'Horário local HH:mm. Se não informado pelo usuário, use 23:59.' },
+        },
+        required: ['courseName', 'type', 'date'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'list_faculty_deadlines',
+      description: 'Lista provas, listas e trabalhos pessoais do usuário, ordenados por data.',
+      parameters: {
+        type: 'object',
+        properties: {
+          courseName: { type: 'string', description: 'Filtre pelo nome da disciplina (opcional).' },
+          status: { type: 'string', enum: ['pendente', 'feito'], description: 'Filtre pelo status (opcional).' },
+          limit: { type: 'number', description: 'Quantidade máxima de resultados, até 50 (padrão 20).' },
+        },
+      },
+    },
+  },
 ]
 
 // ---------- Validação e gravação mediante confirmação explícita do rascunho ----------
@@ -677,7 +717,7 @@ export async function applyConfirmedDraft(draft: AssistantDraft): Promise<void> 
   }
 }
 
-// ---------- Execução das ferramentas (Leitura enxuta + Rascunhos sem escrita) ----------
+// ---------- Execução das ferramentas (leitura, propostas e prazos de Faculdade) ----------
 
 export interface ToolExecutionOutput {
   result: Record<string, unknown>
@@ -698,6 +738,7 @@ const REMINDER_TOOL_NAMES = new Set([
   'list_push_reminders',
   'cancel_push_reminder',
 ])
+const FACULTY_TOOL_NAMES = new Set(['create_faculty_deadline', 'list_faculty_deadlines'])
 
 function normalizeStr(s: string): string {
   return s
@@ -873,6 +914,108 @@ export async function executeAssistantTool(
       dataLabel: `lembretes push (${name})`,
       result: data,
       reminderCards: reminderCards.length > 0 ? reminderCards : undefined,
+    }
+  }
+
+  if (FACULTY_TOOL_NAMES.has(name)) {
+    const stored = await getSetting<FacultyData>(FACULDADE_SETTING_KEY, EMPTY_FACULTY_DATA)
+    if (
+      !stored ||
+      !Array.isArray(stored.courses) ||
+      !Array.isArray(stored.classes) ||
+      !Array.isArray(stored.deadlines) ||
+      !Array.isArray(stored.assessments)
+    ) {
+      throw new Error('Os dados locais de Faculdade estão inválidos. Abra a tela Faculdade para revisar o cadastro.')
+    }
+
+    if (name === 'list_faculty_deadlines') {
+      if (rawArgs.courseName !== undefined && typeof rawArgs.courseName !== 'string') {
+        throw new Error('Filtro de disciplina inválido.')
+      }
+      if (rawArgs.status !== undefined && rawArgs.status !== 'pendente' && rawArgs.status !== 'feito') {
+        throw new Error('Status inválido. Use pendente ou feito.')
+      }
+      if (rawArgs.limit !== undefined && (typeof rawArgs.limit !== 'number' || !Number.isFinite(rawArgs.limit))) {
+        throw new Error('Limite inválido. Informe um número de itens.')
+      }
+      const courseFilter = typeof rawArgs.courseName === 'string' ? normalizeStr(rawArgs.courseName) : ''
+      const statusFilter = rawArgs.status === 'pendente' || rawArgs.status === 'feito' ? rawArgs.status : ''
+      const limit = Math.min(50, Math.max(1, Number(rawArgs.limit) || 20))
+      const courseById = new Map(stored.courses.map((course) => [course.id, course]))
+      const deadlines = stored.deadlines
+        .filter((deadline) => {
+          const course = courseById.get(deadline.courseId)
+          return (
+            (!courseFilter || normalizeStr(course?.name ?? '').includes(courseFilter)) &&
+            (!statusFilter || deadline.status === statusFilter)
+          )
+        })
+        .sort((a, b) => `${a.date}T${a.time}`.localeCompare(`${b.date}T${b.time}`))
+        .slice(0, limit)
+        .map((deadline) => ({
+          ...deadline,
+          courseName: courseById.get(deadline.courseId)?.name ?? 'Disciplina removida',
+        }))
+      return {
+        dataLabel: 'prazos de Faculdade do usuário',
+        result: { deadlines, count: deadlines.length },
+      }
+    }
+
+    const courseName = typeof rawArgs.courseName === 'string' ? rawArgs.courseName.trim() : ''
+    const date = typeof rawArgs.date === 'string' ? rawArgs.date : ''
+    const time = typeof rawArgs.time === 'string' && rawArgs.time.trim() ? rawArgs.time.trim() : '23:59'
+    const type = rawArgs.type
+    if (!courseName || courseName.length > 100) throw new Error('Informe o nome da disciplina para criar o prazo.')
+    if (type !== 'prova' && type !== 'lista' && type !== 'trabalho') {
+      throw new Error('Tipo inválido. Use prova, lista ou trabalho.')
+    }
+    if (!DATE_RE.test(date) || today(parseDate(date)) !== date) {
+      throw new Error('Data inválida. Use uma data real no formato AAAA-MM-DD.')
+    }
+    if (!/^([01]\d|2[0-3]):([0-5]\d)$/.test(time)) {
+      throw new Error('Horário inválido. Use HH:mm.')
+    }
+
+    let course = stored.courses.find((item) => normalizeStr(item.name) === normalizeStr(courseName))
+    let courses = stored.courses
+    if (!course) {
+      course = { id: uid(), name: courseName, passingAverage: 60 }
+      courses = [...courses, course]
+    }
+    const deadline: FacultyDeadline = {
+      id: uid(),
+      courseId: course.id,
+      type,
+      date,
+      time,
+      status: 'pendente',
+    }
+    const next: FacultyData = { ...stored, courses, deadlines: [...stored.deadlines, deadline] }
+    await setSetting(FACULDADE_SETTING_KEY, next)
+
+    let reminderIds: string[] = []
+    let reminderError: string | undefined
+    try {
+      reminderIds = await replaceFacultyDeadlineReminders(deadline, course.name, [], { ...runtime, now })
+      if (reminderIds.length > 0) {
+        const withReminders = {
+          ...next,
+          deadlines: next.deadlines.map((item) => item.id === deadline.id ? { ...item, reminderIds } : item),
+        }
+        await setSetting(FACULDADE_SETTING_KEY, withReminders)
+      }
+    } catch (error) {
+      reminderError = error instanceof Error ? error.message : 'erro desconhecido ao configurar os lembretes.'
+    }
+    return {
+      dataLabel: 'prazo de Faculdade criado',
+      result: {
+        deadline: { ...deadline, courseName: course.name, reminderIds },
+        remindersScheduled: reminderIds.length,
+        ...(reminderError ? { reminderError } : {}),
+      },
     }
   }
 
@@ -1413,7 +1556,7 @@ export interface SendAssistantOptions {
 /**
  * Retorna a lista de ferramentas disponíveis para o usuário:
  * - Proprietário (`OWNER_UID`): todas as ferramentas (incluindo Google Calendar).
- * - Contas secundárias: todas as ferramentas de treino, dieta, corpo e lembretes push, SEM Google Calendar.
+ * - Contas secundárias: ferramentas de treino, dieta, corpo, prazos de Faculdade e lembretes push, SEM Google Calendar.
  */
 export function getAssistantToolsForUser(explicitUid?: string | null): ToolDefinition[] {
   if (isCurrentUserOwner(explicitUid)) {

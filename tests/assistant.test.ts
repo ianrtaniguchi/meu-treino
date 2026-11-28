@@ -75,6 +75,8 @@ describe('Assistente de IA no App (ferramentas, rascunhos, privacidade e isolame
       'create_push_reminder',
       'list_push_reminders',
       'cancel_push_reminder',
+      'create_faculty_deadline',
+      'list_faculty_deadlines',
     ])
 
     const ex = (await db.exercises.toArray())[0]
@@ -126,6 +128,40 @@ describe('Assistente de IA no App (ferramentas, rascunhos, privacidade e isolame
 
     const list = await executeAssistantTool('list_exercises_and_routines', {})
     expect((list.result.exercises as any[]).length).toBeGreaterThan(0)
+  })
+
+  it('cria e lista prazos de Faculdade com os lembretes push vinculados', async () => {
+    const secondaryTools = getAssistantToolsForUser('secondary-account').map((tool) => tool.function.name)
+    expect(secondaryTools).toContain('create_faculty_deadline')
+    expect(secondaryTools).toContain('list_faculty_deadlines')
+    expect(secondaryTools).not.toContain('criar_evento')
+
+    let reminderNumber = 0
+    const fetcher: typeof fetch = async () => {
+      reminderNumber += 1
+      return new Response(JSON.stringify({ reminder: { id: `push-${reminderNumber}` } }), { status: 200 })
+    }
+    const now = new Date(2026, 10, 15, 12, 0)
+    const created = await executeAssistantTool(
+      'create_faculty_deadline',
+      { courseName: 'Cálculo II', type: 'prova', date: '2026-11-20', time: '10:00' },
+      now,
+      { fetcher, getToken: async () => 'firebase-token', workerUrl: 'https://worker.example' },
+    )
+    expect(created.result.remindersScheduled).toBe(2)
+
+    const listed = await executeAssistantTool(
+      'list_faculty_deadlines',
+      { courseName: 'calculo ii', status: 'pendente' },
+      now,
+    )
+    expect(listed.result.count).toBe(1)
+    expect((listed.result.deadlines as any[])[0]).toMatchObject({
+      courseName: 'Cálculo II',
+      type: 'prova',
+      date: '2026-11-20',
+      reminderIds: ['push-1', 'push-2'],
+    })
   })
 
   it('valida rascunhos antes de gravar e NUNCA grava automaticamente quando o modelo propõe escrita', async () => {

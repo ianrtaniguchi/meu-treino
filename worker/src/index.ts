@@ -87,6 +87,10 @@ const MEAL_ANALYSIS_PROMPT = `Você é um nutricionista. Analise a foto do prato
 Responda APENAS com JSON válido, sem texto antes ou depois, exatamente neste formato:
 {"itens":[{"nome":"","gramas":0,"kcal":0,"proteina_g":0,"carbo_g":0,"gordura_g":0,"confianca":"alta|media|baixa"}]}
 Regras: nomes em português do Brasil; valores numéricos (não strings) para a porção total visível de cada item; "confianca" deve ser "alta", "media" ou "baixa". Se a imagem não tiver comida, responda {"itens":[]}.`
+const FACULTY_SCHEDULE_ANALYSIS_PROMPT = `Leia a grade de horários das aulas na imagem. Não invente dados ilegíveis; use strings vazias para campos ausentes e null para professor ausente.
+Responda APENAS com JSON válido, sem texto antes ou depois, exatamente neste formato:
+{"aulas":[{"disciplina":"","dia":"segunda-feira","inicio":"08:00","fim":"10:00","sala":"","professor":null}]}
+Use o nome do dia em português, horário 24h HH:mm, e inclua uma aula por linha/horário visível. Se não houver aulas legíveis, responda {"aulas":[]}.`
 export const MAX_MESSAGES = 40
 export const MAX_MESSAGE_CHARS = 12_000
 export const MAX_TOKENS_CEILING = 1_024
@@ -1209,6 +1213,72 @@ async function analyzeMealImage(
   }
 }
 
+// ---------- Foto da grade de aulas (/analyze-faculty-schedule) ----------
+
+export function parseFacultyScheduleContent(content: unknown): { aulas: unknown[] } {
+  if (typeof content !== 'string') throw new Error('resposta vazia')
+  let text = content.trim()
+  const fence = text.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i)
+  if (fence) text = fence[1].trim()
+  const parsed = JSON.parse(text) as unknown
+  if (!parsed || typeof parsed !== 'object' || !Array.isArray((parsed as any).aulas)) {
+    throw new Error('formato inesperado')
+  }
+  return { aulas: (parsed as any).aulas as unknown[] }
+}
+
+async function analyzeFacultyScheduleImage(
+  imageDataUrl: string,
+  groqApiKey: string,
+  env: Env,
+  fetcher: typeof fetch,
+): Promise<{ status: number; body: Record<string, unknown> }> {
+  const model = (env.GROQ_VISION_MODEL ?? DEFAULT_VISION_MODEL).trim() || DEFAULT_VISION_MODEL
+  let res: Response
+  try {
+    res = await fetcher(GROQ_CHAT_URL, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${groqApiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: FACULTY_SCHEDULE_ANALYSIS_PROMPT },
+              { type: 'image_url', image_url: { url: imageDataUrl } },
+            ],
+          },
+        ],
+        response_format: { type: 'json_object' },
+        reasoning_effort: 'none',
+        temperature: 0.1,
+        max_completion_tokens: 1600,
+      }),
+    })
+  } catch {
+    return { status: 502, body: { error: 'error: falha de comunicação com o provedor de IA.' } }
+  }
+
+  if (!res.ok) {
+    if (res.status === 429) {
+      return { status: 429, body: { error: 'error: limite de uso da API de IA atingido (429). Tente novamente em instantes.' } }
+    }
+    if (res.status === 401 || res.status === 403) {
+      return { status: 502, body: { error: 'error: falha de autenticação do provedor de IA.' } }
+    }
+    return { status: 502, body: { error: `error: serviço de IA temporariamente indisponível (${res.status}).` } }
+  }
+
+  try {
+    const data = (await res.json()) as any
+    const parsed = parseFacultyScheduleContent(data?.choices?.[0]?.message?.content)
+    return { status: 200, body: parsed }
+  } catch {
+    return { status: 502, body: { error: 'error: a IA devolveu uma resposta inválida. Tente outra foto.' } }
+  }
+}
+
 // ---------- Transcrição de áudio por voz (/transcribe): Whisper na Groq ----------
 
 const ALLOWED_AUDIO_EXT_RE = /\.(webm|m4a|mp4|mp3|mpeg|mpga|ogg|oga|wav|flac)$/i
@@ -1335,12 +1405,14 @@ export async function handleRequest(
   }
 
   const isAnalyzeMeal = url.pathname === '/analyze-meal'
+  const isAnalyzeFacultySchedule = url.pathname === '/analyze-faculty-schedule'
   const isTranscribe = url.pathname === '/transcribe'
   const isIfesStatus = url.pathname === '/ifes/status'
   const isPushTest = url.pathname === '/push-test'
   if (
     url.pathname !== '/chat' &&
     !isAnalyzeMeal &&
+    !isAnalyzeFacultySchedule &&
     !isTranscribe &&
     !isIfesStatus &&
     !isPushTest
@@ -1467,8 +1539,9 @@ export async function handleRequest(
   }
 
   // Limite de 64 KB para o corpo do chat (a foto do prato tem um limite próprio, maior)
-  const maxBodyBytes = isAnalyzeMeal ? MAX_IMAGE_BODY_BYTES : MAX_BODY_BYTES
-  const tooLargeMsg = isAnalyzeMeal ? 'error: foto muito grande.' : 'error: corpo da requisição excede 64 KB.'
+  const isPhotoAnalysis = isAnalyzeMeal || isAnalyzeFacultySchedule
+  const maxBodyBytes = isPhotoAnalysis ? MAX_IMAGE_BODY_BYTES : MAX_BODY_BYTES
+  const tooLargeMsg = isPhotoAnalysis ? 'error: foto muito grande.' : 'error: corpo da requisição excede 64 KB.'
   const contentLength = request.headers.get('Content-Length')
   if (contentLength && Number.parseInt(contentLength, 10) > maxBodyBytes) {
     return jsonResponse(413, { error: tooLargeMsg }, origin)
@@ -1514,6 +1587,36 @@ export async function handleRequest(
       )
     }
     const out = await analyzeMealImage(image, visionKey, env, fetcher)
+    return jsonResponse(out.status, out.body, origin)
+  }
+
+  if (isAnalyzeFacultySchedule) {
+    const b = parsedBody as Record<string, unknown> | null
+    const image = b && typeof b === 'object' && !Array.isArray(b) ? b.image : undefined
+    const extra = b && typeof b === 'object' ? Object.keys(b).filter((k) => k !== 'image') : []
+    if (typeof image !== 'string' || !MEAL_IMAGE_DATA_URL_RE.test(image) || extra.length > 0) {
+      return jsonResponse(400, { error: 'error: envie { "image": "data:image/jpeg;base64,..." }.' }, origin)
+    }
+    let visionKey: string
+    try {
+      visionKey = resolveGroqApiKey(env)
+    } catch {
+      return jsonResponse(503, { error: 'chave do assistente não configurada' }, origin)
+    }
+    const photoQuota = await checkAndConsumeDailyQuota(jwtPayload.sub, 'photo', env, {
+      fetcher,
+      nowMs,
+    })
+    if (!photoQuota.allowed) {
+      return jsonResponse(
+        429,
+        {
+          error: `error: limite diário de fotos atingido (${photoQuota.limit}/dia). Tente novamente amanhã.`,
+        },
+        origin,
+      )
+    }
+    const out = await analyzeFacultyScheduleImage(image, visionKey, env, fetcher)
     return jsonResponse(out.status, out.body, origin)
   }
 
