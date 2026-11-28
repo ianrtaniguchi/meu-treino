@@ -23,6 +23,16 @@ describe('módulos da tela Hoje', () => {
     expect(config.enabledMap.noticias).toBe(false)
   })
 
+  it('não rebaixa nem altera preferências gravadas por uma versão mais nova', () => {
+    const config = normalizeTodayModulesConfig(
+      { enabledMap: { noticias: false }, order: ['noticias'], version: 3 },
+      OWNER_UID,
+    )
+
+    expect(config.version).toBe(3)
+    expect(config.enabledMap.noticias).toBe(false)
+  })
+
   it('não expõe Notícias nem Faculdade para outras contas', () => {
     const ids = getAllowedTodayModules('secondary-user').map((module) => module.id)
 

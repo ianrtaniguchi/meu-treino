@@ -7,7 +7,7 @@ export const PWA_APP_ICON_URL = 'https://ianrtaniguchi.github.io/meu-treino/icon
 export const MAX_PUSHES_PER_RUN = 5
 export const MAX_PUSH_BODY_CHARS = 120
 
-export type PushReminderRecurrence = 'none' | 'daily' | 'weekly'
+export type PushReminderRecurrence = 'none' | 'daily' | 'weekly' | 'monthly'
 export type PushReminderStatus = 'pending' | 'sent' | 'cancelled'
 
 export interface PushReminderDoc {
@@ -18,6 +18,7 @@ export interface PushReminderDoc {
   triggerAt: string
   timezone: string
   recurrence: PushReminderRecurrence
+  monthlyDayOfMonth?: number
   status: PushReminderStatus
   createdAt: string
   sentAt: string | null
@@ -1060,11 +1061,16 @@ export async function sendTestPushToUserTokens(
 
 // ---------- Lembretes Push (pushReminders): normalização de datas, CRUD e disparo no Cron ----------
 
-const VALID_RECURRENCES = new Set<PushReminderRecurrence>(['none', 'daily', 'weekly'])
+const VALID_RECURRENCES = new Set<PushReminderRecurrence>(['none', 'daily', 'weekly', 'monthly'])
 
-export function normalizeReminderRecurrence(raw?: unknown): PushReminderRecurrence {
+export function normalizeReminderRecurrence(raw?: unknown, monthlyDayOfMonth?: unknown): PushReminderRecurrence {
   const s = typeof raw === 'string' ? (raw.trim().toLowerCase() as PushReminderRecurrence) : 'none'
-  return VALID_RECURRENCES.has(s) ? s : 'none'
+  if (!VALID_RECURRENCES.has(s)) return 'none'
+  if (
+    s === 'monthly' &&
+    (!Number.isInteger(monthlyDayOfMonth) || Number(monthlyDayOfMonth) < 1 || Number(monthlyDayOfMonth) > 31)
+  ) return 'none'
+  return s
 }
 
 /**
@@ -1100,10 +1106,39 @@ export function computeNextReminderTriggerAtUtc(
   currentTriggerAtIso: string,
   recurrence: PushReminderRecurrence,
   nowMs = Date.now(),
+  monthlyDayOfMonth?: number,
 ): string {
   const baseMs = Date.parse(currentTriggerAtIso)
   if (Number.isNaN(baseMs)) {
     throw new Error(`triggerAt inválido: "${currentTriggerAtIso}"`)
+  }
+  if (recurrence === 'monthly') {
+    if (!Number.isInteger(monthlyDayOfMonth) || monthlyDayOfMonth! < 1 || monthlyDayOfMonth! > 31) {
+      throw new Error('monthlyDayOfMonth deve ser um dia entre 1 e 31 para lembretes mensais.')
+    }
+    // Reminder dates are one day before the expense due date, at the same local time.
+    const localBase = new Date(baseMs - 3 * 60 * 60 * 1000)
+    const currentDueDate = new Date(Date.UTC(
+      localBase.getUTCFullYear(),
+      localBase.getUTCMonth(),
+      localBase.getUTCDate() + 1,
+    ))
+    const timeOfDayMs =
+      ((localBase.getUTCHours() * 60 + localBase.getUTCMinutes()) * 60 + localBase.getUTCSeconds()) * 1000 +
+      localBase.getUTCMilliseconds()
+    let year = currentDueDate.getUTCFullYear()
+    let month = currentDueDate.getUTCMonth() + 1
+    for (let attempt = 0; attempt < 120; attempt++) {
+      const lastDay = new Date(Date.UTC(year, month + 1, 0)).getUTCDate()
+      const dueDay = Math.min(monthlyDayOfMonth!, lastDay)
+      const dueAt = Date.UTC(year, month, dueDay, 3)
+      const nextTriggerAt = dueAt - 24 * 60 * 60 * 1000 + timeOfDayMs
+      if (nextTriggerAt > nowMs) return new Date(nextTriggerAt).toISOString()
+      const nextMonth = new Date(Date.UTC(year, month + 1, 1))
+      year = nextMonth.getUTCFullYear()
+      month = nextMonth.getUTCMonth()
+    }
+    throw new Error('Não foi possível calcular o próximo lembrete mensal.')
   }
   const stepMs =
     recurrence === 'weekly'
@@ -1131,7 +1166,11 @@ function mapRawToPushReminderDoc(docId: string, d: Record<string, any>): PushRem
     body: typeof d.body === 'string' ? d.body : '',
     triggerAt: String(d.triggerAt ?? ''),
     timezone: typeof d.timezone === 'string' && d.timezone ? d.timezone : 'America/Sao_Paulo',
-    recurrence: normalizeReminderRecurrence(d.recurrence),
+    recurrence: normalizeReminderRecurrence(d.recurrence, d.monthlyDayOfMonth),
+    monthlyDayOfMonth:
+      Number.isInteger(d.monthlyDayOfMonth) && d.monthlyDayOfMonth >= 1 && d.monthlyDayOfMonth <= 31
+        ? d.monthlyDayOfMonth
+        : undefined,
     status:
       d.status === 'sent' || d.status === 'cancelled' || d.status === 'pending'
         ? d.status
@@ -1202,6 +1241,7 @@ async function writePushReminderToFirestore(
         triggerAt: reminder.triggerAt,
         timezone: reminder.timezone,
         recurrence: reminder.recurrence,
+        ...(reminder.monthlyDayOfMonth ? { monthlyDayOfMonth: reminder.monthlyDayOfMonth } : {}),
         status: reminder.status,
         createdAt: reminder.createdAt,
         sentAt: reminder.sentAt,
@@ -1225,6 +1265,7 @@ export async function create_push_reminder(
     triggerAt?: string
     inicio?: string
     recurrence?: string
+    monthlyDayOfMonth?: number
     timezone?: string
     url?: string
   },
@@ -1241,7 +1282,14 @@ export async function create_push_reminder(
   }
 
   const triggerAt = normalizeReminderTriggerAtUtc(rawDt)
-  const recurrence = normalizeReminderRecurrence(params.recurrence)
+  const rawRecurrence = typeof params.recurrence === 'string' ? params.recurrence.trim().toLowerCase() : 'none'
+  if (
+    rawRecurrence === 'monthly' &&
+    (!Number.isInteger(params.monthlyDayOfMonth) || params.monthlyDayOfMonth! < 1 || params.monthlyDayOfMonth! > 31)
+  ) {
+    throw new Error('Informe monthlyDayOfMonth (1 a 31) para um lembrete mensal.')
+  }
+  const recurrence = normalizeReminderRecurrence(rawRecurrence, params.monthlyDayOfMonth)
   const body = String(params.body ?? params.descricao ?? '').trim()
   const timezone =
     typeof params.timezone === 'string' && params.timezone.trim()
@@ -1267,6 +1315,7 @@ export async function create_push_reminder(
     triggerAt,
     timezone,
     recurrence,
+    monthlyDayOfMonth: recurrence === 'monthly' ? params.monthlyDayOfMonth : undefined,
     status: 'pending',
     createdAt: new Date(nowMs).toISOString(),
     sentAt: null,
@@ -1397,7 +1446,7 @@ export interface ProcessRemindersReport {
 /**
  * Executado pelo Cron do Worker: busca todos os lembretes `pending` com `triggerAt <= now`,
  * dispara o Web Push via FCM HTTP v1 para os tokens ativos do respectivo `uid`, e atualiza
- * `status = "sent"` (ou avança `triggerAt` se `recurrence` for `"daily"` ou `"weekly"`).
+ * `status = "sent"` (ou avança `triggerAt` para lembretes recorrentes).
  */
 export async function processDuePushReminders(
   env: { FCM_SERVICE_ACCOUNT?: string; FIREBASE_PROJECT_ID?: string },
@@ -1455,11 +1504,12 @@ export async function processDuePushReminders(
       if (sendRes.ok) pushesSent++
     }
 
-    if (reminder.recurrence === 'daily' || reminder.recurrence === 'weekly') {
+    if (reminder.recurrence === 'daily' || reminder.recurrence === 'weekly' || reminder.recurrence === 'monthly') {
       const nextTriggerAt = computeNextReminderTriggerAtUtc(
         reminder.triggerAt,
         reminder.recurrence,
         nowMs,
+        reminder.monthlyDayOfMonth,
       )
       await writePushReminderToFirestore(
         projectId,

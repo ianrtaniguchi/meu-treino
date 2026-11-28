@@ -45,6 +45,7 @@ function isValidPushReminder(data: Record<string, unknown> | null | undefined, a
     'triggerAt',
     'timezone',
     'recurrence',
+    'monthlyDayOfMonth',
     'status',
     'createdAt',
     'sentAt',
@@ -59,7 +60,14 @@ function isValidPushReminder(data: Record<string, unknown> | null | undefined, a
   if ('body' in data && (typeof data.body !== 'string' || data.body.length > 1000)) return false
   if (typeof data.triggerAt !== 'string' || data.triggerAt.length === 0 || data.triggerAt.length > 64) return false
   if ('timezone' in data && (typeof data.timezone !== 'string' || data.timezone.length > 64)) return false
-  if ('recurrence' in data && !['none', 'daily', 'weekly'].includes(String(data.recurrence))) return false
+  if ('recurrence' in data && !['none', 'daily', 'weekly', 'monthly'].includes(String(data.recurrence))) return false
+  if (
+    'monthlyDayOfMonth' in data &&
+    (!Number.isInteger(data.monthlyDayOfMonth) ||
+      Number(data.monthlyDayOfMonth) < 1 ||
+      Number(data.monthlyDayOfMonth) > 31)
+  ) return false
+  if (data.recurrence === 'monthly' && !('monthlyDayOfMonth' in data)) return false
   if (!['pending', 'sent', 'cancelled'].includes(String(data.status))) return false
   return true
 }
@@ -178,6 +186,13 @@ describe('Firestore Security Rules — Isolamento Multi-Usuário e Proteção de
         method: 'create',
       }),
     ).toBe(true)
+    expect(
+      evaluateFirestoreRule(rulesText, {
+        auth: USER_A,
+        path: `users/${USER_A.uid}/records/expenses:expense-1`,
+        method: 'create',
+      }),
+    ).toBe(true)
 
     // Usuário B nos próprios registros
     expect(
@@ -203,6 +218,13 @@ describe('Firestore Security Rules — Isolamento Multi-Usuário e Proteção de
         method: 'update',
       }),
     ).toBe(false)
+    expect(
+      evaluateFirestoreRule(rulesText, {
+        auth: USER_A,
+        path: `users/${USER_B.uid}/records/expenses:expense-1`,
+        method: 'get',
+      }),
+    ).toBe(false)
 
     // Usuário B tentando ler ou escrever nos registros do Usuário A -> NEGADO
     expect(
@@ -217,6 +239,43 @@ describe('Firestore Security Rules — Isolamento Multi-Usuário e Proteção de
         auth: USER_B,
         path: `users/${USER_A.uid}/records/sessions:s1`,
         method: 'delete',
+      }),
+    ).toBe(false)
+  })
+
+  it('permite agendar lembretes mensais de Gastos apenas para o UID autenticado', () => {
+    const monthlyExpenseReminder = {
+      uid: USER_A.uid,
+      title: 'Vencimento de gasto fixo',
+      body: 'Um gasto fixo vence amanhã.',
+      triggerAt: '2026-12-09T12:00:00.000Z',
+      timezone: 'America/Sao_Paulo',
+      recurrence: 'monthly',
+      monthlyDayOfMonth: 10,
+      status: 'pending',
+    }
+    expect(
+      evaluateFirestoreRule(rulesText, {
+        auth: USER_A,
+        path: 'pushReminders/monthly-expense',
+        method: 'create',
+        requestData: monthlyExpenseReminder,
+      }),
+    ).toBe(true)
+    expect(
+      evaluateFirestoreRule(rulesText, {
+        auth: USER_B,
+        path: 'pushReminders/monthly-expense',
+        method: 'create',
+        requestData: monthlyExpenseReminder,
+      }),
+    ).toBe(false)
+    expect(
+      evaluateFirestoreRule(rulesText, {
+        auth: USER_A,
+        path: 'pushReminders/monthly-expense-invalid',
+        method: 'create',
+        requestData: { ...monthlyExpenseReminder, monthlyDayOfMonth: 32 },
       }),
     ).toBe(false)
   })

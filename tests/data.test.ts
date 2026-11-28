@@ -21,7 +21,24 @@ async function fill() {
   await db.sessions.bulkAdd([session('a'), session('b', '2026-11-02')])
   await db.meals.add(meal('m1'))
   await db.body.add(body('2026-11-01', 80.5))
+  await db.expenses.add({
+    id: 'expense-1',
+    date: '2026-11-01',
+    amountCents: 3099,
+    category: 'Alimentação',
+    merchantNote: 'Mercado',
+    origin: 'manual',
+  })
+  await db.expenseLimits.add({ id: 'limit-1', category: 'Alimentação', monthlyLimitCents: 50000 })
+  await db.recurringExpenses.add({
+    id: 'recurring-1',
+    name: 'Internet',
+    amountCents: 9900,
+    dayOfMonth: 10,
+    category: 'Moradia',
+  })
   await setSetting('goals', { kcal: 2000, p: 100, c: 200, g: 60 })
+  await setSetting('expenseCategories', ['Alimentação', 'Moradia'])
 }
 
 beforeEach(async () => {
@@ -67,6 +84,9 @@ describe('migração de schema', () => {
     expect(b.schemaVersion).toBe(DB_VERSION)
     expect(b.tables.sessions[0].entries).toEqual([])
     expect(b.tables.body[0].measures).toEqual({})
+    expect(b.tables.expenses).toEqual([])
+    expect(b.tables.expenseLimits).toEqual([])
+    expect(b.tables.recurringExpenses).toEqual([])
   })
 })
 
@@ -79,6 +99,19 @@ describe('validação de backup', () => {
     const noTable = { ...good, tables: { ...good.tables, sessions: undefined } }
     expect(() => parseBackup(JSON.stringify(noTable))).toThrow(BackupError)
   })
+
+  it('rejeita notas de gastos que contenham possíveis identificadores financeiros', async () => {
+    const backup = await buildBackup()
+    backup.tables.expenses = [{
+      id: 'unsafe-expense',
+      date: '2026-11-01',
+      amountCents: 3099,
+      category: 'Alimentação',
+      merchantNote: 'Cartão 1234',
+      origin: 'manual',
+    }]
+    expect(() => parseBackup(JSON.stringify(backup))).toThrow(/gasto inválido/i)
+  })
 })
 
 describe('exportar → importar', () => {
@@ -86,6 +119,10 @@ describe('exportar → importar', () => {
     await ensureSeed()
     await fill()
     const exported = await buildBackup()
+    expect(exported.tables.expenses).toHaveLength(1)
+    expect(exported.tables.expenseLimits).toHaveLength(1)
+    expect(exported.tables.recurringExpenses).toHaveLength(1)
+    expect(exported.tables.settings.find((row) => row.key === 'expenseCategories')?.value).toEqual(['Alimentação', 'Moradia'])
     const text = JSON.stringify(exported)
 
     await db.delete()

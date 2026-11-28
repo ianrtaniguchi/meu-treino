@@ -48,7 +48,7 @@ export default function RestPanel({ endAt, total, onChange, onClear }: { endAt: 
     <div style={{ marginTop: 8 }}>
       <div className="muted small">{left === 0 ? '# descanso concluído' : '# descanso'}</div>
       <div className={`rest-big ${left === 0 ? 'green' : ''}`}>{mm}:{ss}</div>
-      <div className="bar" style={{ margin: '12px 0' }}><i style={{ width: `${pct}%`, transition: 'none' }} /></div>
+      <div className="bar" style={{ margin: '12px 0' }}><i style={{ transform: `scaleX(${pct / 100})`, transition: 'none' }} /></div>
       <div className="grid3">
         <button style={{ minHeight: 48 }} onClick={() => onChange(Math.max(Date.now(), endAt - 15000))}>-15s</button>
         <button style={{ minHeight: 48 }} onClick={() => onChange(endAt + 15000)}>+15s</button>

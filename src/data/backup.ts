@@ -1,5 +1,6 @@
 import { DB_VERSION, SYNCABLE_SETTINGS, db, migrateBodyV2, migrateRecordV3, migrateSessionV2, pkOf, recordDocId, runApplyingRemote, uid } from './db'
 import { LOCK_SETTING_KEYS } from '../lib/lock'
+import { containsFinancialIdentifier } from '../lib/expenses'
 import { TABLE_NAMES, type Backup, type OutboxEntry, type Snapshot, type SnapshotKind, type TableName } from './types'
 
 export const BACKUP_APP_ID = 'meu-treino-pwa'
@@ -41,7 +42,7 @@ export function parseBackup(text: string): Backup {
   if (!raw.tables || typeof raw.tables !== 'object') throw new BackupError('Backup sem tabelas.')
   const tables = {} as Backup['tables']
   for (const t of TABLE_NAMES) {
-    const rows = raw.tables[t]
+    const rows = raw.tables[t] ?? (v < 4 && ['expenses', 'expenseLimits', 'recurringExpenses'].includes(t) ? [] : undefined)
     if (!Array.isArray(rows)) throw new BackupError(`Tabela "${t}" ausente ou inválida.`)
     const pk = pkOf(t)
     for (const r of rows) {
@@ -59,6 +60,58 @@ export function parseBackup(text: string): Backup {
   }
   for (const b of tables.body) {
     if (typeof b.date !== 'string') throw new BackupError('Registro corporal sem data no backup.')
+  }
+  for (const expense of tables.expenses) {
+    if (
+      typeof expense.date !== 'string' ||
+      typeof expense.amountCents !== 'number' ||
+      !Number.isInteger(expense.amountCents) ||
+      expense.amountCents <= 0 ||
+      typeof expense.category !== 'string' ||
+      !expense.category.trim() ||
+      expense.category.length > 40 ||
+      containsFinancialIdentifier(expense.category) ||
+      (expense.merchantNote !== undefined &&
+        (typeof expense.merchantNote !== 'string' ||
+          expense.merchantNote.length > 120 ||
+          containsFinancialIdentifier(expense.merchantNote))) ||
+      !['manual', 'assistant', 'wallet'].includes(expense.origin)
+    ) {
+      throw new BackupError('Gasto inválido no backup.')
+    }
+  }
+  for (const limit of tables.expenseLimits) {
+    if (
+      typeof limit.category !== 'string' ||
+      !limit.category.trim() ||
+      limit.category.length > 40 ||
+      typeof limit.monthlyLimitCents !== 'number' ||
+      !Number.isSafeInteger(limit.monthlyLimitCents) ||
+      limit.monthlyLimitCents <= 0
+    ) {
+      throw new BackupError('Limite de gastos inválido no backup.')
+    }
+  }
+  for (const recurring of tables.recurringExpenses) {
+    if (
+      typeof recurring.name !== 'string' ||
+      !recurring.name.trim() ||
+      recurring.name.length > 80 ||
+      containsFinancialIdentifier(recurring.name) ||
+      typeof recurring.amountCents !== 'number' ||
+      !Number.isSafeInteger(recurring.amountCents) ||
+      recurring.amountCents <= 0 ||
+      typeof recurring.category !== 'string' ||
+      !recurring.category.trim() ||
+      recurring.category.length > 40 ||
+      containsFinancialIdentifier(recurring.category) ||
+      typeof recurring.dayOfMonth !== 'number' ||
+      !Number.isInteger(recurring.dayOfMonth) ||
+      recurring.dayOfMonth < 1 ||
+      recurring.dayOfMonth > 31
+    ) {
+      throw new BackupError('Gasto fixo inválido no backup.')
+    }
   }
   // Migrações de backups antigos (espelham as do Dexie)
   if (v < 2) {

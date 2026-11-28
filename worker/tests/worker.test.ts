@@ -18,6 +18,26 @@ import {
   type Env,
   type JsonWebKeyWithKid,
 } from '../src/index'
+import { computeNextReminderTriggerAtUtc, normalizeReminderRecurrence } from '../src/ifes'
+
+describe('lembretes push mensais', () => {
+  it('avança um vencimento mensal preservando o dia, horário e o último dia de meses curtos', () => {
+    expect(normalizeReminderRecurrence('monthly', 1)).toBe('monthly')
+    expect(normalizeReminderRecurrence('monthly', 32)).toBe('none')
+    expect(computeNextReminderTriggerAtUtc(
+      '2026-02-28T12:00:00.000Z',
+      'monthly',
+      Date.parse('2026-02-28T12:00:00.000Z'),
+      1,
+    )).toBe('2026-03-31T12:00:00.000Z')
+    expect(computeNextReminderTriggerAtUtc(
+      '2026-03-30T12:00:00.000Z',
+      'monthly',
+      Date.parse('2026-03-30T12:00:00.000Z'),
+      31,
+    )).toBe('2026-04-29T12:00:00.000Z')
+  })
+})
 
 function bytesToBase64Url(bytes: Uint8Array): string {
   const b64 = Buffer.from(bytes).toString('base64')
@@ -302,6 +322,8 @@ describe('Cloudflare Worker Proxy (/chat)', () => {
         messages: [{ role: 'user', content: 'oi da conta secundária' }],
         tools: [
           { type: 'function', function: { name: 'propose_meal', parameters: {} } },
+          { type: 'function', function: { name: 'propose_expense', parameters: {} } },
+          { type: 'function', function: { name: 'get_expense_summary', parameters: {} } },
           { type: 'function', function: { name: 'criar_evento', parameters: {} } },
           { type: 'function', function: { name: 'listar_eventos', parameters: {} } },
         ],

@@ -82,7 +82,8 @@ export interface PushReminderItem {
   body: string
   triggerAt: string
   timezone: string
-  recurrence: 'none' | 'daily' | 'weekly'
+  recurrence: 'none' | 'daily' | 'weekly' | 'monthly'
+  monthlyDayOfMonth?: number
   status: 'pending' | 'sent' | 'cancelled'
   createdAt?: string
   sentAt?: string | null
@@ -754,7 +755,14 @@ export function subscribeUserPendingPushReminders(
               triggerAt: d.triggerAt,
               timezone: typeof d.timezone === 'string' ? d.timezone : 'America/Sao_Paulo',
               recurrence:
-                d.recurrence === 'daily' || d.recurrence === 'weekly' ? d.recurrence : 'none',
+                d.recurrence === 'monthly'
+                  ? Number.isInteger(d.monthlyDayOfMonth) && d.monthlyDayOfMonth >= 1 && d.monthlyDayOfMonth <= 31
+                    ? 'monthly'
+                    : 'none'
+                  : d.recurrence === 'daily' || d.recurrence === 'weekly'
+                    ? d.recurrence
+                    : 'none',
+              monthlyDayOfMonth: Number.isInteger(d.monthlyDayOfMonth) ? d.monthlyDayOfMonth : undefined,
               status: 'pending',
               createdAt: typeof d.createdAt === 'string' ? d.createdAt : undefined,
               sentAt: typeof d.sentAt === 'string' ? d.sentAt : null,
@@ -773,6 +781,38 @@ export function subscribeUserPendingPushReminders(
     onError?.(e instanceof Error ? e : new Error(String(e)))
     return () => {}
   }
+}
+
+export async function createUserPushReminder(input: {
+  title: string
+  body: string
+  triggerAt: string
+  recurrence?: 'none' | 'daily' | 'weekly' | 'monthly'
+  monthlyDayOfMonth?: number
+}): Promise<string> {
+  const user = getFirebaseAuth().currentUser
+  if (!user?.uid) throw new Error('Entre na sua conta para configurar lembretes push.')
+  if (!Number.isFinite(Date.parse(input.triggerAt))) throw new Error('Data do lembrete push inválida.')
+  if (
+    input.recurrence === 'monthly' &&
+    (!Number.isInteger(input.monthlyDayOfMonth) || input.monthlyDayOfMonth! < 1 || input.monthlyDayOfMonth! > 31)
+  ) {
+    throw new Error('Informe o dia de vencimento entre 1 e 31 para um lembrete mensal.')
+  }
+  const fs = getFirebaseDb()
+  const ref = doc(collection(fs, 'pushReminders'))
+  await setDoc(ref, {
+    uid: user.uid,
+    title: input.title,
+    body: input.body,
+    triggerAt: input.triggerAt,
+    timezone: 'America/Sao_Paulo',
+    recurrence: input.recurrence ?? 'none',
+    ...(input.recurrence === 'monthly' ? { monthlyDayOfMonth: input.monthlyDayOfMonth } : {}),
+    status: 'pending',
+    createdAt: new Date().toISOString(),
+  })
+  return ref.id
 }
 
 export async function cancelUserPushReminder(reminderId: string): Promise<void> {

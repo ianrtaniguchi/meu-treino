@@ -18,7 +18,7 @@ export interface ChromeNavContextValue {
   onToggleConfig?: () => void
   fitnessSection?: FitnessSection
   onSelectFitnessSection?: (section: FitnessSection) => void
-  onNavigateTab?: (tab: 'treino' | 'dieta' | 'corpo' | 'assistente' | 'noticias' | 'onibus' | 'config') => void
+  onNavigateTab?: (tab: 'treino' | 'dieta' | 'corpo' | 'assistente' | 'noticias' | 'onibus' | 'faculdade' | 'gastos' | 'config') => void
 }
 
 export const ChromeNavContext = createContext<ChromeNavContextValue>({
@@ -35,6 +35,7 @@ const PATH_TITLES: Record<string, string> = {
   '~/noticias': 'Notícias',
   '~/onibus': 'Transporte',
   '~/faculdade': 'Faculdade',
+  '~/gastos': 'Gastos',
   '~/config': 'Configurações',
   '~/hoje': 'Hoje',
   '~/inicio': 'Início',

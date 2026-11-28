@@ -179,7 +179,7 @@ function Historico() {
         {weeks.map((w) => (
           <div key={w.week} className="row" style={{ margin: '4px 0' }}>
             <span className="muted small" style={{ width: 48 }}>{fmtShort(w.week)}</span>
-            <div className="bar grow"><i style={{ width: `${(w.count / maxW) * 100}%` }} /></div>
+            <div className="bar grow"><i style={{ transform: `scaleX(${w.count / maxW})` }} /></div>
             <b style={{ width: 20, textAlign: 'right' }}>{w.count}</b>
           </div>
         ))}

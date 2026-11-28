@@ -1,9 +1,10 @@
 import Dexie, { type Table } from 'dexie'
-import { TABLE_NAMES, type Backup, type BodyEntry, type Exercise, type Food, type Meal, type OutboxEntry, type Routine, type Session, type Setting, type Snapshot, type TableName } from './types'
+import { TABLE_NAMES, type Backup, type BodyEntry, type Exercise, type Expense, type ExpenseLimit, type Food, type Meal, type OutboxEntry, type RecurringExpense, type Routine, type Session, type Setting, type Snapshot, type TableName } from './types'
 
 export const DB_NAME = 'meu-treino'
 /** Versão do schema = schemaVersion gravado nos backups. */
-export const DB_VERSION = 3
+export const DB_VERSION = 4
+const PRE_EXPENSE_TABLE_NAMES: TableName[] = ['exercises', 'routines', 'sessions', 'foods', 'meals', 'body', 'settings']
 
 /** Configurações que fazem sentido sincronizar entre aparelhos (nunca PIN/Face ID/estado efêmero). */
 export const SYNCABLE_SETTINGS = new Set([
@@ -14,6 +15,7 @@ export const SYNCABLE_SETTINGS = new Set([
   'profileName',
   'todayModulesConfig',
   'faculdadeData',
+  'expenseCategories',
 ])
 
 export const pkOf = (table: TableName) => (table === 'settings' ? 'key' : 'id')
@@ -100,6 +102,9 @@ export class AppDB extends Dexie {
   foods!: Table<Food, string>
   meals!: Table<Meal, string>
   body!: Table<BodyEntry, string>
+  expenses!: Table<Expense, string>
+  expenseLimits!: Table<ExpenseLimit, string>
+  recurringExpenses!: Table<RecurringExpense, string>
   settings!: Table<Setting, string>
   snapshots!: Table<Snapshot, string>
   outbox!: Table<OutboxEntry, string>
@@ -141,9 +146,12 @@ export class AppDB extends Dexie {
         const now = Date.now()
         // Snapshot automático antes da migração v2 → v3 (se já havia dados do usuário)
         const tables = {} as Backup['tables']
-        for (const t of TABLE_NAMES) {
+        for (const t of PRE_EXPENSE_TABLE_NAMES) {
           tables[t] = await tx.table(t).toArray()
         }
+        tables.expenses = []
+        tables.expenseLimits = []
+        tables.recurringExpenses = []
         const hasUserData = tables.sessions.length + tables.meals.length + tables.body.length > 0
         if (hasUserData) {
           await tx.table('snapshots').add({
@@ -159,13 +167,28 @@ export class AppDB extends Dexie {
             },
           })
         }
-        for (const t of TABLE_NAMES) {
+        for (const t of PRE_EXPENSE_TABLE_NAMES) {
           await tx
             .table(t)
             .toCollection()
             .modify((r) => Object.assign(r, migrateRecordV3(r, now)))
         }
       })
+
+    this.version(4).stores({
+      exercises: 'id, category, name, updatedAt',
+      routines: 'id, updatedAt',
+      sessions: 'id, date, routineId, updatedAt',
+      foods: 'id, name, updatedAt',
+      meals: 'id, date, updatedAt',
+      body: 'id, date, updatedAt',
+      expenses: 'id, date, category, updatedAt',
+      expenseLimits: 'id, category, updatedAt',
+      recurringExpenses: 'id, category, dayOfMonth, updatedAt',
+      settings: 'key, updatedAt',
+      snapshots: 'id, kind, createdAt',
+      outbox: 'id, table, updatedAt',
+    })
 
     this.installSyncMiddleware()
     this.installTableWrappers()
