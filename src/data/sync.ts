@@ -154,6 +154,9 @@ export interface SyncSideCounts {
   sessions: number
   meals: number
   body: number
+  expenses: number
+  expenseLimits: number
+  recurringExpenses: number
   routines: number
   customExercises: number
   customFoods: number
@@ -170,10 +173,13 @@ export interface FirstLoginPreview {
 }
 
 export async function getLocalCounts(): Promise<SyncSideCounts> {
-  const [sessions, meals, body, routines, exercises, foods] = await Promise.all([
+  const [sessions, meals, body, expenses, expenseLimits, recurringExpenses, routines, exercises, foods] = await Promise.all([
     db.sessions.count(),
     db.meals.count(),
     db.body.count(),
+    db.expenses.count(),
+    db.expenseLimits.count(),
+    db.recurringExpenses.count(),
     db.routines.count(),
     db.exercises.toArray(),
     db.foods.toArray(),
@@ -184,10 +190,14 @@ export async function getLocalCounts(): Promise<SyncSideCounts> {
     sessions,
     meals,
     body,
+    expenses,
+    expenseLimits,
+    recurringExpenses,
     routines,
     customExercises,
     customFoods,
-    totalUserItems: sessions + meals + body + routines + customExercises + customFoods,
+    totalUserItems:
+      sessions + meals + body + expenses + expenseLimits + recurringExpenses + routines + customExercises + customFoods,
   }
 }
 
@@ -196,6 +206,9 @@ export function getCloudCounts(records: CloudRecord[]): SyncSideCounts {
   const sessions = active.filter((r) => r.table === 'sessions').length
   const meals = active.filter((r) => r.table === 'meals').length
   const body = active.filter((r) => r.table === 'body').length
+  const expenses = active.filter((r) => r.table === 'expenses').length
+  const expenseLimits = active.filter((r) => r.table === 'expenseLimits').length
+  const recurringExpenses = active.filter((r) => r.table === 'recurringExpenses').length
   const routines = active.filter((r) => r.table === 'routines').length
   const customExercises = active.filter((r) => r.table === 'exercises').length
   const customFoods = active.filter((r) => r.table === 'foods').length
@@ -203,10 +216,14 @@ export function getCloudCounts(records: CloudRecord[]): SyncSideCounts {
     sessions,
     meals,
     body,
+    expenses,
+    expenseLimits,
+    recurringExpenses,
     routines,
     customExercises,
     customFoods,
-    totalUserItems: sessions + meals + body + routines + customExercises + customFoods,
+    totalUserItems:
+      sessions + meals + body + expenses + expenseLimits + recurringExpenses + routines + customExercises + customFoods,
   }
 }
 
@@ -618,6 +635,7 @@ export async function isolateAccountOnSwitch(nextUid: string): Promise<boolean> 
   const prevUid = typeof prevRow?.value === 'string' ? prevRow.value.trim() : ''
 
   if (prevUid && prevUid !== nextUid) {
+    await waitPendingOutbox()
     await createSnapshot(
       'seguranca',
       `Troca de conta (${prevUid.slice(0, 6)} → ${nextUid.slice(0, 6)})`,
@@ -628,7 +646,15 @@ export async function isolateAccountOnSwitch(nextUid: string): Promise<boolean> 
         [...TABLE_NAMES.map((t) => db.table(t)), db.outbox],
         async () => {
           await db.outbox.clear()
-          for (const t of ['sessions', 'routines', 'meals', 'body'] as TableName[]) {
+          for (const t of [
+            'sessions',
+            'routines',
+            'meals',
+            'body',
+            'expenses',
+            'expenseLimits',
+            'recurringExpenses',
+          ] as TableName[]) {
             await db.table(t).clear()
           }
           const exs = await db.exercises.toArray()

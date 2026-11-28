@@ -4,6 +4,7 @@ import { DEFAULT_GOALS } from '../data/seed'
 import { addDays, dayTotals, exerciseHistory, movingAverage, parseDate, personalRecord, setLabel, today, totalVolume } from '../data/stats'
 import { getFirebaseAuth, getSyncStatus } from '../data/sync'
 import type { BodyEntry, Exercise, Goals, Meal, MealItem, MealType, Routine, Session } from '../data/types'
+import { containsFinancialIdentifier, getLimitThresholdCrossings, parseMoneyToCents, summarizeMonth } from './expenses'
 import { buildDays, prSetIds, streaks } from './panel'
 import {
   EMPTY_FACULTY_DATA,
@@ -29,7 +30,7 @@ Regras obrigatórias:
 1. Baseie suas análises EXCLUSIVAMENTE nos dados reais do usuário obtidos pelas ferramentas de leitura. Consulte as ferramentas antes de responder sobre evolução, volume, dieta ou peso.
 2. Quando não houver dados suficientes registrados no período, diga claramente que ainda não há registros suficientes — NUNCA invente números, séries, pesos ou calorias.
 3. NUNCA dê diagnóstico médico nem prescreva tratamento clínico. Se o usuário relatar dor aguda, lesão ou condição clínica, recomende consultar um médico, fisioterapeuta ou nutricionista.
-4. Para refeição, rotina de treino e peso/medidas, você NÃO grava dados diretamente: chame a ferramenta de proposta correspondente (propose_meal, propose_routine ou propose_body_weight) e avise que o rascunho foi gerado abaixo para ele conferir e confirmar. Para prazos de Faculdade, crie diretamente com a ferramenta de Faculdade quando o pedido do usuário for explícito.
+4. Para refeição, rotina de treino, peso/medidas e gastos, você NÃO grava dados diretamente: chame a ferramenta de proposta correspondente (propose_meal, propose_routine, propose_body_weight ou propose_expense) e avise que o rascunho foi gerado abaixo para ele conferir e confirmar. Para consultar gastos, use get_expense_summary; esse resumo contém apenas totais agregados por mês e categoria, sem lançamentos individuais.
 
 Agenda (Google Calendar): você também gerencia a agenda do usuário no fuso America/Sao_Paulo (usando a data e hora atuais informadas abaixo) com as ferramentas criar_evento, editar_evento, listar_eventos e apagar_evento. Use duração padrão de 1h quando o término não for informado, pergunte ao usuário se faltar data ou hora para criar um evento, e extraia automaticamente título, data, horário, local e descrição de e-mails e convites colados na conversa (lembrando que editar e apagar exigem confirmação pelo botão Confirmar).
 
@@ -152,7 +153,17 @@ export interface BodyDraft {
   measures: Record<string, number>
 }
 
-export type AssistantDraft = MealDraft | RoutineDraft | BodyDraft
+export interface ExpenseDraft {
+  id: string
+  kind: 'expense'
+  status: 'pending' | 'confirmed' | 'discarded'
+  date: string
+  amountCents: number
+  category: string
+  merchantNote?: string
+}
+
+export type AssistantDraft = MealDraft | RoutineDraft | BodyDraft | ExpenseDraft
 
 export interface CalendarEventInfo {
   id: string
@@ -183,7 +194,8 @@ export interface PushReminderInfo {
   body?: string
   triggerAt: string
   timezone?: string
-  recurrence: 'none' | 'daily' | 'weekly'
+  recurrence: 'none' | 'daily' | 'weekly' | 'monthly'
+  monthlyDayOfMonth?: number
   status: 'pending' | 'sent' | 'cancelled'
   url?: string
 }
@@ -355,6 +367,40 @@ export const ASSISTANT_TOOLS: ToolDefinition[] = [
           },
         },
         required: ['type', 'items'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'propose_expense',
+      description:
+        'Propõe um gasto para revisão e confirmação explícita antes de salvar. Nunca salva diretamente. Não peça nem inclua dados de cartão, banco ou conta.',
+      parameters: {
+        type: 'object',
+        properties: {
+          amount: { type: 'number', description: 'Valor em reais, por exemplo 30.50.' },
+          category: { type: 'string', description: 'Categoria do gasto.' },
+          merchantNote: { type: 'string', description: 'Estabelecimento ou nota curta opcional.' },
+          date: { type: 'string', description: 'Data no formato AAAA-MM-DD (opcional, padrão hoje).' },
+        },
+        required: ['amount', 'category'],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_expense_summary',
+      description:
+        'Consulta apenas os totais agregados dos gastos e recorrentes de um mês, separados por categoria. Não retorna estabelecimentos nem lançamentos individuais.',
+      parameters: {
+        type: 'object',
+        properties: {
+          month: { type: 'string', description: 'Mês no formato AAAA-MM (opcional, padrão mês atual).' },
+        },
+        additionalProperties: false,
       },
     },
   },
@@ -589,6 +635,14 @@ export const ASSISTANT_TOOLS: ToolDefinition[] = [
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
 const VALID_MEAL_TYPES: Set<MealType> = new Set(['cafe', 'almoco', 'jantar', 'lanche'])
+const OWNER_EXPENSE_TOOL_NAMES = new Set(['propose_expense', 'get_expense_summary'])
+
+function isValidCalendarDate(date: string): boolean {
+  if (!DATE_RE.test(date)) return false
+  const [year, month, day] = date.split('-').map(Number)
+  const parsed = new Date(Date.UTC(year, month - 1, day))
+  return parsed.getUTCFullYear() === year && parsed.getUTCMonth() === month - 1 && parsed.getUTCDate() === day
+}
 
 export function validateDraft(draft: AssistantDraft): void {
   if (!draft || typeof draft !== 'object') {
@@ -655,13 +709,39 @@ export function validateDraft(draft: AssistantDraft): void {
     return
   }
 
+  if (draft.kind === 'expense') {
+    if (!isValidCalendarDate(draft.date)) {
+      throw new Error('Data do gasto inválida (use AAAA-MM-DD).')
+    }
+    if (!Number.isSafeInteger(draft.amountCents) || draft.amountCents <= 0 || draft.amountCents > 500_000_000) {
+      throw new Error('Valor do gasto inválido.')
+    }
+    if (
+      typeof draft.category !== 'string' ||
+      !draft.category.trim() ||
+      draft.category.trim().length > 40 ||
+      containsFinancialIdentifier(draft.category)
+    ) {
+      throw new Error('Informe uma categoria válida para o gasto.')
+    }
+    if (
+      draft.merchantNote !== undefined &&
+      (typeof draft.merchantNote !== 'string' ||
+        draft.merchantNote.length > 120 ||
+        containsFinancialIdentifier(draft.merchantNote))
+    ) {
+      throw new Error('A nota deve ter até 120 caracteres e não pode incluir dados de cartão, banco ou conta.')
+    }
+    return
+  }
+
   throw new Error('Tipo de rascunho desconhecido.')
 }
 
 /**
  * Grava no Dexie um rascunho SOMENTE após o toque de confirmação do usuário.
  */
-export async function applyConfirmedDraft(draft: AssistantDraft): Promise<void> {
+export async function applyConfirmedDraft(draft: AssistantDraft): Promise<string[]> {
   validateDraft(draft)
 
   if (draft.kind === 'meal') {
@@ -691,7 +771,7 @@ export async function applyConfirmedDraft(draft: AssistantDraft): Promise<void> 
       }
       await db.meals.put(meal)
     }
-    return
+    return []
   }
 
   if (draft.kind === 'routine') {
@@ -701,7 +781,7 @@ export async function applyConfirmedDraft(draft: AssistantDraft): Promise<void> 
       exerciseIds: [...draft.exerciseIds],
     }
     await db.routines.put(routine)
-    return
+    return []
   }
 
   if (draft.kind === 'body') {
@@ -714,7 +794,35 @@ export async function applyConfirmedDraft(draft: AssistantDraft): Promise<void> 
       measures: { ...(existing?.measures ?? {}), ...(draft.measures ?? {}) },
     }
     await db.body.put(entry)
+    return []
   }
+
+  if (draft.kind === 'expense') {
+    const month = draft.date.slice(0, 7)
+    const [existingExpenses, recurringExpenses, limits] = await Promise.all([
+      db.expenses.toArray(),
+      db.recurringExpenses.toArray(),
+      db.expenseLimits.toArray(),
+    ])
+    const before = summarizeMonth(existingExpenses, recurringExpenses, month)
+    await db.expenses.put({
+      id: draft.id,
+      date: draft.date,
+      amountCents: draft.amountCents,
+      category: draft.category.trim(),
+      merchantNote: draft.merchantNote?.trim() || undefined,
+      origin: 'assistant',
+    })
+    const previousCents = before.byCategory.find((item) => item.category === draft.category)?.totalCents ?? 0
+    const limit = limits.find((item) => item.category === draft.category && !item.deleted)
+    if (!limit) return []
+    return getLimitThresholdCrossings(previousCents, previousCents + draft.amountCents, limit).map((threshold) =>
+      threshold === 80
+        ? `${draft.category} chegou a 80% do limite mensal.`
+        : `${draft.category} ultrapassou o limite mensal.`,
+    )
+  }
+  return []
 }
 
 // ---------- Execução das ferramentas (leitura, propostas e prazos de Faculdade) ----------
@@ -731,6 +839,7 @@ export interface ExecuteToolRuntimeOptions {
   fetcher?: typeof fetch
   getToken?: () => Promise<string | null>
   workerUrl?: string
+  userUid?: string | null
 }
 
 const REMINDER_TOOL_NAMES = new Set([
@@ -800,6 +909,37 @@ export async function executeAssistantTool(
 ): Promise<ToolExecutionOutput> {
   // Data local de hoje calculada exatamente pela mesma função `today(now)` usada pelo Painel e Heatmap
   const localToday = today(now)
+
+  if (OWNER_EXPENSE_TOOL_NAMES.has(name) && !isCurrentUserOwner(runtime.userUid)) {
+    throw new Error('Acesso ao módulo Gastos restrito ao proprietário.')
+  }
+
+  if (name === 'get_expense_summary') {
+    const month =
+      typeof rawArgs.month === 'string' && /^\d{4}-(0[1-9]|1[0-2])$/.test(rawArgs.month)
+        ? rawArgs.month
+        : localToday.slice(0, 7)
+    const [expenses, recurringExpenses] = await Promise.all([
+      db.expenses.toArray(),
+      db.recurringExpenses.toArray(),
+    ])
+    const summary = summarizeMonth(expenses, recurringExpenses, month)
+    return {
+      dataLabel: `resumo agregado de gastos (${month}; totais por categoria)`,
+      result: {
+        month,
+        totalCents: summary.totalCents,
+        expensesCents: summary.expensesCents,
+        recurringCents: summary.recurringCents,
+        categories: summary.byCategory.map(({ category, expensesCents, recurringCents, totalCents }) => ({
+          category,
+          expensesCents,
+          recurringCents,
+          totalCents,
+        })),
+      },
+    }
+  }
 
   if (CALENDAR_TOOL_NAMES.has(name)) {
     const fetcher = runtime.fetcher ?? fetch
@@ -1368,6 +1508,36 @@ export async function executeAssistantTool(
     }
   }
 
+  if (name === 'propose_expense') {
+    const amountRaw = rawArgs.amount
+    if (typeof amountRaw !== 'number' && typeof amountRaw !== 'string') {
+      throw new Error('Informe o valor do gasto em reais.')
+    }
+    const amountCents = parseMoneyToCents(String(amountRaw))
+    if (amountCents === null) throw new Error('Valor do gasto inválido.')
+    const date = typeof rawArgs.date === 'string' ? rawArgs.date : localToday
+    const merchantNote = typeof rawArgs.merchantNote === 'string' ? rawArgs.merchantNote.trim() : ''
+    const draft: ExpenseDraft = {
+      id: uid(),
+      kind: 'expense',
+      status: 'pending',
+      date,
+      amountCents,
+      category: String(rawArgs.category ?? '').trim(),
+      merchantNote: merchantNote || undefined,
+    }
+    validateDraft(draft)
+    return {
+      dataLabel: 'rascunho de gasto para confirmação',
+      draft,
+      result: {
+        status: 'draft_created',
+        confirmationRequired: true,
+        note: 'Rascunho disponível no app; aguarde a confirmação explícita antes de salvar.',
+      },
+    }
+  }
+
   if (name === 'propose_routine') {
     const routineName = String(rawArgs.name ?? '').trim()
     const requested = Array.isArray(rawArgs.exercises) ? rawArgs.exercises.map((x) => String(x)) : []
@@ -1452,15 +1622,38 @@ export async function loadAssistantHistory(explicitUid?: string | null): Promise
   const key = getAssistantHistoryKeyForUser(explicitUid)
   const row = await getRawRecord('settings', key)
   if (row && !row.deleted && Array.isArray(row.value)) {
-    return row.value as ChatTurnMessage[]
+    const messages = filterFinancialIdentifiers(row.value as ChatTurnMessage[])
+    if (messages.length !== row.value.length) {
+      await runApplyingRemote(async () => {
+        await db.settings.put({ key, value: messages, updatedAt: Date.now(), deleted: false })
+      })
+    }
+    return messages
   }
   if (key !== ASSISTANT_HISTORY_KEY) {
     const legacy = await getRawRecord('settings', ASSISTANT_HISTORY_KEY)
     if (legacy && !legacy.deleted && Array.isArray(legacy.value)) {
-      return legacy.value as ChatTurnMessage[]
+      const messages = filterFinancialIdentifiers(legacy.value as ChatTurnMessage[])
+      if (messages.length !== legacy.value.length) {
+        await runApplyingRemote(async () => {
+          await db.settings.put({
+            key: ASSISTANT_HISTORY_KEY,
+            value: messages,
+            updatedAt: Date.now(),
+            deleted: false,
+          })
+        })
+      }
+      return messages
     }
   }
   return []
+}
+
+function filterFinancialIdentifiers(messages: ChatTurnMessage[]): ChatTurnMessage[] {
+  return messages.filter(
+    (message) => typeof message?.content === 'string' && !containsFinancialIdentifier(message.content),
+  )
 }
 
 export async function saveAssistantHistory(
@@ -1468,7 +1661,7 @@ export async function saveAssistantHistory(
   explicitUid?: string | null,
 ): Promise<void> {
   const key = getAssistantHistoryKeyForUser(explicitUid)
-  const trimmed = messages.slice(-30)
+  const trimmed = filterFinancialIdentifiers(messages).slice(-30)
   const now = Date.now()
   await runApplyingRemote(async () => {
     await db.settings.put({
@@ -1562,7 +1755,9 @@ export function getAssistantToolsForUser(explicitUid?: string | null): ToolDefin
   if (isCurrentUserOwner(explicitUid)) {
     return ASSISTANT_TOOLS
   }
-  return ASSISTANT_TOOLS.filter((t) => !CALENDAR_TOOL_NAMES.has(t.function.name))
+  return ASSISTANT_TOOLS.filter(
+    (t) => !CALENDAR_TOOL_NAMES.has(t.function.name) && !OWNER_EXPENSE_TOOL_NAMES.has(t.function.name),
+  )
 }
 
 async function defaultGetIdToken(): Promise<string | null> {
@@ -1598,6 +1793,10 @@ export async function sendAssistantTurn(
   priorHistory: ChatTurnMessage[],
   options: SendAssistantOptions = {},
 ): Promise<ChatTurnMessage> {
+  if (containsFinancialIdentifier(userText)) {
+    throw new Error('Não envie números de cartão, banco ou conta ao assistente.')
+  }
+
   const fetcher = options.fetcher ?? fetch
   const getToken = options.getToken ?? defaultGetIdToken
   const baseUrl = (options.workerUrl ?? ASSISTANT_WORKER_URL).replace(/\/+$/, '')
@@ -1612,7 +1811,11 @@ export async function sendAssistantTurn(
     throw new Error('error: você precisa estar logado na nuvem (Configurações) para usar o assistente.')
   }
 
-  const recentContext = priorHistory.slice(-10).map<ApiMessage>((m) => ({
+  const expenseRequest =
+    /\b(gasto|gastei|gastos|despesa|despesas|orçamento|orcamento|limite|assinatura|recorrente|fixo|vencimento)\b|quanto\s+(?:saiu|foi)|total do mês|categoria mais pesada/i.test(
+      userText,
+    )
+  const recentContext = (expenseRequest ? [] : filterFinancialIdentifiers(priorHistory).slice(-10)).map<ApiMessage>((m) => ({
     role: m.role,
     content: m.content,
   }))
@@ -1702,6 +1905,7 @@ export async function sendAssistantTurn(
           fetcher,
           getToken,
           workerUrl: baseUrl,
+          userUid: options.userUid,
         })
         dataSentLabels.push(out.dataLabel)
         if (out.draft) {

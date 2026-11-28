@@ -4,6 +4,7 @@ import { ChromeNavContext, PromptTitle } from '../components/TerminalChrome'
 import { useUi } from '../components/ui'
 import { dayTotals } from '../data/stats'
 import { useSyncStatus } from '../hooks'
+import { containsFinancialIdentifier, formatCents } from '../lib/expenses'
 import {
   applyConfirmedDraft,
   cancelPushReminderCard,
@@ -125,6 +126,11 @@ export default function Assistente() {
     if (!text || busy) return
     setErr('')
 
+    if (containsFinancialIdentifier(text)) {
+      setErr('error: não envie números de cartão, banco ou conta ao assistente.')
+      return
+    }
+
     if (!online) {
       setErr('error: sem conexão com a internet. O assistente funciona apenas online.')
       return
@@ -147,7 +153,7 @@ export default function Assistente() {
     await saveAssistantHistory(nextHistory)
 
     try {
-      const reply = await sendAssistantTurn(text, history)
+      const reply = await sendAssistantTurn(text, history, { userUid: activeUid })
       await saveAssistantHistory([...nextHistory, reply])
     } catch (e) {
       const msg = (e as Error)?.message || 'error: falha ao consultar o assistente.'
@@ -167,7 +173,7 @@ export default function Assistente() {
 
   const handleConfirmDraft = async (msgId: string, draft: AssistantDraft) => {
     try {
-      await applyConfirmedDraft(draft)
+      const limitAlerts = await applyConfirmedDraft(draft)
       const updated = history.map((m) => {
         if (m.id !== msgId || !m.drafts) return m
         return {
@@ -177,9 +183,15 @@ export default function Assistente() {
       })
       await saveAssistantHistory(updated)
       const targetTab =
-        draft.kind === 'meal' ? 'dieta' : draft.kind === 'body' ? 'corpo' : 'treino'
+        draft.kind === 'expense'
+          ? 'gastos'
+          : draft.kind === 'meal'
+            ? 'dieta'
+            : draft.kind === 'body'
+              ? 'corpo'
+              : 'treino'
       toast(
-        'Rascunho confirmado e salvo',
+        limitAlerts.length > 0 ? limitAlerts.join(' ') : 'Rascunho confirmado e salvo',
         onNavigateTab
           ? {
               label: 'abrir',
@@ -388,7 +400,13 @@ export default function Assistente() {
                       onNavigateTab
                         ? () =>
                             onNavigateTab(
-                              d.kind === 'meal' ? 'dieta' : d.kind === 'body' ? 'corpo' : 'treino',
+                              d.kind === 'expense'
+                                ? 'gastos'
+                                : d.kind === 'meal'
+                                  ? 'dieta'
+                                  : d.kind === 'body'
+                                    ? 'corpo'
+                                    : 'treino',
                             )
                         : undefined
                     }
@@ -528,7 +546,9 @@ function DraftCard({
   const isPending = draft.status === 'pending'
   const isConfirmed = draft.status === 'confirmed'
   const sectionLabel =
-    draft.kind === 'meal'
+    draft.kind === 'expense'
+      ? 'Hoje › Gastos'
+      : draft.kind === 'meal'
       ? 'Treino › Dieta'
       : draft.kind === 'body'
         ? 'Treino › Corpo'
@@ -549,7 +569,7 @@ function DraftCard({
     >
       <div className="row between">
         <b className="small amber">
-          [rascunho: {draft.kind === 'meal' ? 'refeição' : draft.kind === 'routine' ? 'rotina' : 'peso / medidas'}]
+          [rascunho: {draft.kind === 'expense' ? 'gasto' : draft.kind === 'meal' ? 'refeição' : draft.kind === 'routine' ? 'rotina' : 'peso / medidas'}]
         </b>
         <span className="chip">
           {draft.status === 'pending'
@@ -611,6 +631,15 @@ function DraftCard({
                 .join(' · ')}
             </div>
           )}
+        </div>
+      )}
+
+      {draft.kind === 'expense' && (
+        <div className="stack small">
+          <div>
+            data: <b>{draft.date}</b> · categoria: <b>{draft.category}</b> · valor: <b>{formatCents(draft.amountCents)}</b>
+          </div>
+          {draft.merchantNote && <div className="muted">nota: {draft.merchantNote}</div>}
         </div>
       )}
 

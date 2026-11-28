@@ -32,7 +32,6 @@ import {
   filenameForAudioMime,
   transcribeAudioClip,
 } from '../src/lib/audioRecorder'
-import { CALENDAR_SCOPE } from '../scripts/google-oauth.mjs'
 
 async function resetDb() {
   await db.delete()
@@ -66,6 +65,8 @@ describe('Assistente de IA no App (ferramentas, rascunhos, privacidade e isolame
       'get_body_evolution',
       'list_exercises_and_routines',
       'propose_meal',
+      'propose_expense',
+      'get_expense_summary',
       'propose_routine',
       'propose_body_weight',
       'criar_evento',
@@ -168,6 +169,7 @@ describe('Assistente de IA no App (ferramentas, rascunhos, privacidade e isolame
     const mealsBefore = await db.meals.count()
     const routinesBefore = await db.routines.count()
     const bodyBefore = await db.body.count()
+    const expensesBefore = await db.expenses.count()
 
     // 1. Modelo propõe refeição, rotina e peso: banco continua intacto
     const mealProposal = await executeAssistantTool('propose_meal', {
@@ -185,10 +187,28 @@ describe('Assistente de IA no App (ferramentas, rascunhos, privacidade e isolame
       weight: 73.8,
       measures: { cintura: 77.5 },
     })
+    const expenseProposal = await executeAssistantTool(
+      'propose_expense',
+      { amount: 30, category: 'Alimentação', merchantNote: 'Mercado', date: '2026-11-15' },
+      new Date('2026-11-15T10:00:00-03:00'),
+      { userUid: OWNER_UID },
+    )
 
     expect(await db.meals.count()).toBe(mealsBefore)
     expect(await db.routines.count()).toBe(routinesBefore)
     expect(await db.body.count()).toBe(bodyBefore)
+    expect(await db.expenses.count()).toBe(expensesBefore)
+    expect(expenseProposal.result).toEqual({
+      status: 'draft_created',
+      confirmationRequired: true,
+      note: 'Rascunho disponível no app; aguarde a confirmação explícita antes de salvar.',
+    })
+    expect(expenseProposal.draft).toMatchObject({
+      kind: 'expense',
+      amountCents: 3000,
+      category: 'Alimentação',
+      merchantNote: 'Mercado',
+    })
 
     // 2. Validação rejeita rascunhos inválidos antes de gravar
     expect(() =>
@@ -213,19 +233,194 @@ describe('Assistente de IA no App (ferramentas, rascunhos, privacidade e isolame
       }),
     ).toThrow()
 
+    expect(() =>
+      validateDraft({
+        id: 'bad-expense',
+        kind: 'expense',
+        status: 'pending',
+        date: '2026-11-15',
+        amountCents: 3000,
+        category: 'Conta 123456',
+      }),
+    ).toThrow(/categoria válida/i)
+
     // 3. Somente após confirmação explícita (applyConfirmedDraft) os dados são gravados no Dexie
     await applyConfirmedDraft(mealProposal.draft as AssistantDraft)
     await applyConfirmedDraft(routineProposal.draft as AssistantDraft)
     await applyConfirmedDraft(bodyProposal.draft as AssistantDraft)
+    const expenseAlerts = await applyConfirmedDraft(expenseProposal.draft as AssistantDraft)
 
     expect(await db.meals.count()).toBe(mealsBefore + 1)
     expect(await db.routines.count()).toBe(routinesBefore + 1)
     expect(await db.body.count()).toBe(bodyBefore + 1)
+    expect(await db.expenses.count()).toBe(expensesBefore + 1)
+    expect(await db.expenses.get((expenseProposal.draft as any).id)).toMatchObject({
+      amountCents: 3000,
+      origin: 'assistant',
+    })
+    expect(expenseAlerts).toEqual([])
+  })
+
+  it('envia ao Groq apenas a solicitação e argumentos necessários; o resultado da proposta não repete o gasto', async () => {
+    const sent: Array<Record<string, any>> = []
+    let call = 0
+    const fetcher: typeof fetch = async (_input, init) => {
+      sent.push(JSON.parse(String(init?.body ?? '{}')))
+      call++
+      const message = call === 1
+        ? {
+            role: 'assistant',
+            content: null,
+            tool_calls: [{
+              id: 'tc-expense',
+              type: 'function',
+              function: {
+                name: 'propose_expense',
+                arguments: JSON.stringify({
+                  amount: 30,
+                  category: 'Alimentação',
+                  merchantNote: 'Mercado',
+                  date: '2026-11-28',
+                }),
+              },
+            }],
+          }
+        : { role: 'assistant', content: 'Confira e confirme o rascunho.' }
+      return new Response(JSON.stringify({ choices: [{ message }] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
+
+    const reply = await sendAssistantTurn(
+      'Gastei 30 no mercado',
+      [{ id: 'prior', role: 'user', content: 'texto anterior não necessário', createdAt: 1 }],
+      { fetcher, getToken: async () => 'token', userUid: OWNER_UID },
+    )
+    const toolMessage = sent[1].messages.find((message: any) => message.role === 'tool')
+    const assistantToolCall = sent[1].messages.find((message: any) => message.role === 'assistant')
+
+    expect(reply.drafts?.[0]).toMatchObject({ amountCents: 3000, category: 'Alimentação' })
+    expect(sent[0].messages.map((message: any) => message.role)).toEqual(['system', 'user'])
+    expect(sent[0].messages[1].content).toBe('Gastei 30 no mercado')
+    expect(sent[0].messages.some((message: any) => message.content?.includes('texto anterior não necessário'))).toBe(false)
+    expect(JSON.parse(assistantToolCall.tool_calls[0].function.arguments)).toEqual({
+      amount: 30,
+      category: 'Alimentação',
+      merchantNote: 'Mercado',
+      date: '2026-11-28',
+    })
+    expect(toolMessage.content).not.toContain('3000')
+    expect(toolMessage.content).not.toContain('Mercado')
+    expect(JSON.parse(toolMessage.content)).toMatchObject({ status: 'draft_created', confirmationRequired: true })
+  })
+
+  it('consulta gastos para o assistente somente como total agregado do mês por categoria', async () => {
+    await db.expenses.put({
+      id: 'e-private',
+      date: '2026-11-02',
+      amountCents: 3000,
+      category: 'Alimentação',
+      merchantNote: 'Mercado do bairro',
+      origin: 'manual',
+    })
+    await db.recurringExpenses.put({
+      id: 'r-private',
+      name: 'Internet residencial',
+      amountCents: 9000,
+      dayOfMonth: 10,
+      category: 'Moradia',
+    })
+    const output = await executeAssistantTool(
+      'get_expense_summary',
+      { month: '2026-11' },
+      new Date('2026-11-28T10:00:00-03:00'),
+      { userUid: OWNER_UID },
+    )
+
+    expect(output.result).toEqual({
+      month: '2026-11',
+      totalCents: 12000,
+      expensesCents: 3000,
+      recurringCents: 9000,
+      categories: [
+        { category: 'Moradia', expensesCents: 0, recurringCents: 9000, totalCents: 9000 },
+        { category: 'Alimentação', expensesCents: 3000, recurringCents: 0, totalCents: 3000 },
+      ],
+    })
+    expect(JSON.stringify(output.result)).not.toContain('Mercado do bairro')
+    expect(JSON.stringify(output.result)).not.toContain('Internet residencial')
+  })
+
+  it('envia ao Groq apenas o agregado da consulta de gastos, sem histórico ou lançamentos', async () => {
+    await db.expenses.put({
+      id: 'query-private-expense',
+      date: '2026-11-02',
+      amountCents: 3000,
+      category: 'Alimentação',
+      merchantNote: 'Mercado confidencial',
+      origin: 'manual',
+    })
+    await db.recurringExpenses.put({
+      id: 'query-private-recurring',
+      name: 'Assinatura confidencial',
+      amountCents: 9000,
+      dayOfMonth: 10,
+      category: 'Moradia',
+    })
+    const sent: Array<Record<string, any>> = []
+    let call = 0
+    const fetcher: typeof fetch = async (_input, init) => {
+      sent.push(JSON.parse(String(init?.body ?? '{}')))
+      call++
+      const message = call === 1
+        ? {
+            role: 'assistant',
+            content: null,
+            tool_calls: [{
+              id: 'tc-summary',
+              type: 'function',
+              function: {
+                name: 'get_expense_summary',
+                arguments: JSON.stringify({ month: '2026-11' }),
+              },
+            }],
+          }
+        : { role: 'assistant', content: 'Resumo agregado consultado.' }
+      return new Response(JSON.stringify({ choices: [{ message }] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
+
+    await sendAssistantTurn(
+      'Quanto gastei no mês?',
+      [{ id: 'prior', role: 'assistant', content: 'Mercado confidencial', createdAt: 1 }],
+      { fetcher, getToken: async () => 'token', userUid: OWNER_UID },
+    )
+    const toolMessage = sent[1].messages.find((message: any) => message.role === 'tool')
+
+    expect(sent[0].messages.map((message: any) => message.role)).toEqual(['system', 'user'])
+    expect(sent[0].messages.some((message: any) => message.content?.includes('Mercado confidencial'))).toBe(false)
+    expect(JSON.parse(toolMessage.content)).toEqual({
+      month: '2026-11',
+      totalCents: 12000,
+      expensesCents: 3000,
+      recurringCents: 9000,
+      categories: [
+        { category: 'Moradia', expensesCents: 0, recurringCents: 9000, totalCents: 9000 },
+        { category: 'Alimentação', expensesCents: 3000, recurringCents: 0, totalCents: 3000 },
+      ],
+    })
+    expect(toolMessage.content).not.toContain('Mercado confidencial')
+    expect(toolMessage.content).not.toContain('Assinatura confidencial')
   })
 
   it('executa ciclo de tool calling com mock (sem rede) e lista quais dados foram enviados na resposta', async () => {
     let callCount = 0
-    const mockFetcher: typeof fetch = async () => {
+    let firstRequestBody = ''
+    const mockFetcher: typeof fetch = async (_input, init) => {
+      if (callCount === 0) firstRequestBody = String(init?.body ?? '')
       callCount++
       if (callCount === 1) {
         return new Response(
@@ -269,13 +464,18 @@ describe('Assistente de IA no App (ferramentas, rascunhos, privacidade e isolame
       )
     }
 
-    const reply = await sendAssistantTurn('Como foi minha semana?', [], {
-      fetcher: mockFetcher,
-      getToken: async () => 'fake-firebase-id-token',
-      workerUrl: 'https://meu-worker.workers.dev',
-    })
+    const reply = await sendAssistantTurn(
+      'Como foi minha semana?',
+      [{ id: 'sensitive', role: 'user', content: 'Minha conta é 123456789', createdAt: 1 }],
+      {
+        fetcher: mockFetcher,
+        getToken: async () => 'fake-firebase-id-token',
+        workerUrl: 'https://meu-worker.workers.dev',
+      },
+    )
 
     expect(callCount).toBe(2)
+    expect(firstRequestBody).not.toContain('123456789')
     expect(reply.role).toBe('assistant')
     expect(reply.content).toContain('não registrou treinos')
     expect(reply.content).not.toContain('Pensamento interno')
@@ -343,6 +543,44 @@ describe('Assistente de IA no App (ferramentas, rascunhos, privacidade e isolame
     await clearAssistantHistory()
     expect(await loadAssistantHistory()).toEqual([])
     expect(await db.outbox.count()).toBe(0)
+  })
+
+  it('não envia nem persiste identificadores financeiros no prompt ou no histórico', async () => {
+    const safeMessage: ChatTurnMessage = {
+      id: 'safe',
+      role: 'user',
+      content: 'Gastei 30 no mercado',
+      createdAt: 1,
+    }
+    const sensitiveMessage: ChatTurnMessage = {
+      id: 'sensitive',
+      role: 'user',
+      content: 'Meu cartão é 1234 5678 9012',
+      createdAt: 2,
+    }
+
+    await saveAssistantHistory([safeMessage, sensitiveMessage])
+    expect(await loadAssistantHistory()).toEqual([safeMessage])
+
+    await db.settings.put({
+      key: ASSISTANT_HISTORY_KEY,
+      value: [safeMessage, sensitiveMessage],
+      updatedAt: 3,
+      deleted: false,
+    })
+    expect(await loadAssistantHistory()).toEqual([safeMessage])
+    expect((await db.settings.get(ASSISTANT_HISTORY_KEY))?.value).toEqual([safeMessage])
+
+    let fetched = false
+    await expect(
+      sendAssistantTurn(sensitiveMessage.content, [], {
+        fetcher: async () => {
+          fetched = true
+          return new Response()
+        },
+      }),
+    ).rejects.toThrow('Não envie números de cartão, banco ou conta ao assistente.')
+    expect(fetched).toBe(false)
   })
 
   it('simula 22:49 em UTC-3 (quando em UTC já é o dia seguinte 01:49Z) e garante datas locais, peso de hoje e filtro de deleted = true', async () => {
@@ -453,7 +691,8 @@ describe('Assistente de IA no App (ferramentas, rascunhos, privacidade e isolame
   })
 
   it('integra ferramentas de agenda (Google Calendar), escopo calendar.events e fluxo de confirmação de editar/apagar', async () => {
-    expect(CALENDAR_SCOPE).toBe('https://www.googleapis.com/auth/calendar.events')
+    expect(fs.readFileSync(path.resolve('scripts/google-oauth.mjs'), 'utf8'))
+      .toContain("export const CALENDAR_SCOPE = 'https://www.googleapis.com/auth/calendar.events'")
     expect(SYSTEM_PROMPT).toContain('America/Sao_Paulo')
     expect(SYSTEM_PROMPT).toContain('1h')
     expect(SYSTEM_PROMPT).toContain('Confirmar')
@@ -680,6 +919,8 @@ describe('Assistente de IA no App (ferramentas, rascunhos, privacidade e isolame
     expect(secondaryTools).not.toContain('listar_eventos')
     expect(secondaryTools).not.toContain('editar_evento')
     expect(secondaryTools).not.toContain('apagar_evento')
+    expect(secondaryTools).not.toContain('propose_expense')
+    expect(secondaryTools).not.toContain('get_expense_summary')
     expect(secondaryTools).toContain('propose_meal')
     expect(secondaryTools).toContain('create_push_reminder')
 

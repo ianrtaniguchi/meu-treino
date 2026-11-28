@@ -153,6 +153,72 @@ describe('migração v2 → v3 (sincronização)', () => {
 })
 
 describe('outbox (fila de envio)', () => {
+  it('mantém gastos isolados ao trocar de conta e preserva snapshot local', async () => {
+    await setSetting('activeAccountUid', 'owner-uid')
+    await db.expenses.put({
+      id: 'private-expense',
+      date: '2026-11-10',
+      amountCents: 3099,
+      category: 'Alimentação',
+      merchantNote: 'Mercado',
+      origin: 'manual',
+    })
+    await db.expenseLimits.put({ id: 'private-limit', category: 'Alimentação', monthlyLimitCents: 10000 })
+    await db.recurringExpenses.put({
+      id: 'private-recurring',
+      name: 'Internet',
+      amountCents: 9900,
+      dayOfMonth: 10,
+      category: 'Moradia',
+    })
+    await setSetting('expenseCategories', ['Alimentação', 'Moradia'])
+    await waitPendingOutbox()
+
+    await isolateAccountOnSwitch('another-uid')
+
+    expect(await db.expenses.count()).toBe(0)
+    expect(await db.expenseLimits.count()).toBe(0)
+    expect(await db.recurringExpenses.count()).toBe(0)
+    expect(await db.settings.get('expenseCategories')).toBeUndefined()
+    expect(await db.outbox.count()).toBe(0)
+    expect((await listSnapshots())[0].data.tables.expenses).toMatchObject([
+      { id: 'private-expense', amountCents: 3099 },
+    ])
+    await waitPendingOutbox()
+    expect(await cloud.adapter.fetchAll('another-uid')).toEqual([])
+  })
+
+  it('sincroniza gastos, limites, recorrentes e categorias sob o UID autenticado', async () => {
+    await db.expenses.put({
+      id: 'e1',
+      date: '2026-11-10',
+      amountCents: 3099,
+      category: 'Alimentação',
+      origin: 'manual',
+    })
+    await db.expenseLimits.put({ id: 'l1', category: 'Alimentação', monthlyLimitCents: 10000 })
+    await db.recurringExpenses.put({
+      id: 'r1',
+      name: 'Internet',
+      amountCents: 9900,
+      dayOfMonth: 10,
+      category: 'Moradia',
+    })
+    await setSetting('expenseCategories', ['Alimentação', 'Moradia'])
+    await waitPendingOutbox()
+
+    await flushOutbox('owner-uid')
+
+    const ownerRecords = await cloud.adapter.fetchAll('owner-uid')
+    expect(ownerRecords.map((record) => record.table).sort()).toEqual([
+      'expenseLimits',
+      'expenses',
+      'recurringExpenses',
+      'settings',
+    ])
+    expect(await cloud.adapter.fetchAll('another-uid')).toEqual([])
+  })
+
   it('enfileira gravações locais, envia em lote para a nuvem e faz retry em caso de falha', async () => {
     await ensureSeed()
     expect(await db.outbox.count()).toBe(0) // seed inicial não polui a fila

@@ -19,29 +19,34 @@ import {
   getNextFacultyDeadline,
   type FacultyData,
 } from '../lib/faculty'
+import { getNextRecurringDueDate, formatCents, monthKey, summarizeMonth } from '../lib/expenses'
 
 export interface TodayModuleDef {
   id: string
   title: string
   icon: IconName
-  targetTab: 'treino' | 'dieta' | 'corpo' | 'noticias' | 'onibus' | 'assistente' | 'faculdade'
+  targetTab: 'treino' | 'dieta' | 'corpo' | 'noticias' | 'onibus' | 'assistente' | 'faculdade' | 'gastos'
   defaultActive: boolean
   allowedUids?: string[]
 }
 
+const TODAY_MODULES_CONFIG_VERSION = 2
+
 export const TODAY_MODULES: TodayModuleDef[] = [
   { id: 'treino', title: 'Treino do Dia', icon: 'treino', targetTab: 'treino', defaultActive: true },
   { id: 'dieta', title: 'Dieta e Macros', icon: 'dieta', targetTab: 'dieta', defaultActive: true },
-  { id: 'faculdade', title: 'Faculdade', icon: 'faculdade', targetTab: 'faculdade', defaultActive: true },
+  { id: 'faculdade', title: 'Faculdade', icon: 'faculdade', targetTab: 'faculdade', defaultActive: true, allowedUids: [OWNER_UID] },
   { id: 'onibus', title: 'Próximo Ônibus Favorito', icon: 'onibus', targetTab: 'onibus', defaultActive: true, allowedUids: [OWNER_UID] },
   { id: 'noticias', title: 'Notícias do IFES', icon: 'noticias', targetTab: 'noticias', defaultActive: true, allowedUids: [OWNER_UID] },
   { id: 'agenda', title: 'Agenda Google', icon: 'assistente', targetTab: 'assistente', defaultActive: true, allowedUids: [OWNER_UID] },
   { id: 'push', title: 'Lembretes Push', icon: 'assistente', targetTab: 'assistente', defaultActive: true, allowedUids: [OWNER_UID] },
+  { id: 'gastos', title: 'Gastos', icon: 'gastos', targetTab: 'gastos', defaultActive: true, allowedUids: [OWNER_UID] },
 ]
 
 export interface TodayModulesConfigRecord {
   enabledMap: Record<string, boolean>
   order: string[]
+  version?: number
 }
 
 const DEFAULT_ENABLED_MAP = TODAY_MODULES.reduce<Record<string, boolean>>((enabledMap, module) => {
@@ -49,7 +54,30 @@ const DEFAULT_ENABLED_MAP = TODAY_MODULES.reduce<Record<string, boolean>>((enabl
   return enabledMap
 }, {})
 
-const DEFAULT_ORDER = ['treino', 'dieta', 'faculdade', 'onibus', 'noticias', 'agenda', 'push']
+const DEFAULT_ORDER = ['treino', 'dieta', 'faculdade', 'onibus', 'noticias', 'agenda', 'push', 'gastos']
+
+export function getAllowedTodayModules(userUid?: string | null): TodayModuleDef[] {
+  return TODAY_MODULES.filter((module) => !module.allowedUids || module.allowedUids.includes(userUid ?? ''))
+}
+
+export function normalizeTodayModulesConfig(
+  saved: TodayModulesConfigRecord | null | undefined,
+  userUid?: string | null,
+): TodayModulesConfigRecord {
+  if (!saved || typeof saved !== 'object') {
+    return { enabledMap: DEFAULT_ENABLED_MAP, order: DEFAULT_ORDER, version: TODAY_MODULES_CONFIG_VERSION }
+  }
+
+  const enabledMap = { ...DEFAULT_ENABLED_MAP, ...(saved.enabledMap ?? {}) }
+  const savedVersion = typeof saved.version === 'number' ? saved.version : 0
+  const version = Math.max(TODAY_MODULES_CONFIG_VERSION, savedVersion)
+  if (userUid === OWNER_UID && savedVersion < TODAY_MODULES_CONFIG_VERSION) {
+    enabledMap.noticias = true
+  }
+  const savedOrder = Array.isArray(saved.order) && saved.order.length > 0 ? saved.order : DEFAULT_ORDER
+  const order = [...savedOrder, ...TODAY_MODULES.map((module) => module.id).filter((id) => !savedOrder.includes(id))]
+  return { enabledMap, order, version }
+}
 
 export function useTodayModulesConfig(): {
   config: TodayModulesConfigRecord
@@ -57,23 +85,27 @@ export function useTodayModulesConfig(): {
   reorder: (nextOrder: string[]) => void
 } {
   const saved = useSetting<TodayModulesConfigRecord | null>('todayModulesConfig', null)
-  const config = useMemo<TodayModulesConfigRecord>(() => {
-    if (!saved || typeof saved !== 'object') {
-      return { enabledMap: DEFAULT_ENABLED_MAP, order: DEFAULT_ORDER }
+  const syncStatus = useSyncStatus()
+  const userUid = syncStatus.user?.uid
+  const config = useMemo(() => normalizeTodayModulesConfig(saved, userUid), [saved, userUid])
+
+  useEffect(() => {
+    if (
+      saved &&
+      typeof saved === 'object' &&
+      (typeof saved.version !== 'number' || saved.version < (config.version ?? TODAY_MODULES_CONFIG_VERSION))
+    ) {
+      void setSetting('todayModulesConfig', config)
     }
-    const enabledMap = { ...DEFAULT_ENABLED_MAP, ...(saved.enabledMap ?? {}) }
-    const savedOrder = Array.isArray(saved.order) && saved.order.length > 0 ? saved.order : DEFAULT_ORDER
-    const order = [...savedOrder, ...TODAY_MODULES.map((module) => module.id).filter((id) => !savedOrder.includes(id))]
-    return { enabledMap, order }
-  }, [saved])
+  }, [config, saved])
 
   const setEnabled = (id: string, active: boolean) => {
     const nextMap = { ...config.enabledMap, [id]: active }
-    void setSetting('todayModulesConfig', { ...config, enabledMap: nextMap })
+    void setSetting('todayModulesConfig', { ...config, version: TODAY_MODULES_CONFIG_VERSION, enabledMap: nextMap })
   }
 
   const reorder = (nextOrder: string[]) => {
-    void setSetting('todayModulesConfig', { ...config, order: nextOrder })
+    void setSetting('todayModulesConfig', { ...config, version: TODAY_MODULES_CONFIG_VERSION, order: nextOrder })
   }
 
   return { config, setEnabled, reorder }
@@ -81,9 +113,11 @@ export function useTodayModulesConfig(): {
 export default function Hoje({
   onNavigateTab,
   noticiasItems = [],
+  gastosSummaryUnlocked = false,
 }: {
-  onNavigateTab?: (tab: 'treino' | 'dieta' | 'corpo' | 'noticias' | 'onibus' | 'assistente' | 'faculdade' | 'config') => void
+  onNavigateTab?: (tab: 'treino' | 'dieta' | 'corpo' | 'noticias' | 'onibus' | 'assistente' | 'faculdade' | 'gastos' | 'config') => void
   noticiasItems?: IfesNoticia[]
+  gastosSummaryUnlocked?: boolean
 }) {
   const syncStatus = useSyncStatus()
   const profileName = useSetting<string>('profileName', '')
@@ -109,10 +143,8 @@ export default function Hoje({
 
   const todayStr = useMemo(() => today(), [])
   const isOwner = syncStatus.user?.uid === OWNER_UID
-  const allowedModules = useMemo(
-    () => TODAY_MODULES.filter((module) => !module.allowedUids || module.allowedUids.includes(syncStatus.user?.uid ?? '')),
-    [syncStatus.user?.uid],
-  )
+  const currentMonth = monthKey(new Date(`${todayStr}T12:00:00`))
+  const allowedModules = useMemo(() => getAllowedTodayModules(syncStatus.user?.uid), [syncStatus.user?.uid])
 
   const todaySession = useLiveQuery(
     async () => await db.sessions.where('date').equals(todayStr).toArray(),
@@ -128,6 +160,23 @@ export default function Hoje({
     [],
   )
   const totals = useMemo(() => dayTotals(todayMeals ?? []), [todayMeals])
+  const expenseSummary = useLiveQuery(
+    async () => {
+      if (!isOwner) return null
+      const [expenses, recurringExpenses] = await Promise.all([
+        db.expenses.toArray(),
+        db.recurringExpenses.toArray(),
+      ])
+      const summary = summarizeMonth(expenses, recurringExpenses, currentMonth)
+      const nextDue = recurringExpenses
+        .filter((item) => item.deleted !== true)
+        .map((item) => ({ item, date: getNextRecurringDueDate(item.dayOfMonth, todayStr) }))
+        .sort((a, b) => a.date.localeCompare(b.date))[0]
+      return { summary, nextDue }
+    },
+    [isOwner, currentMonth, todayStr],
+    null,
+  )
 
   const ifesReadIdsRaw = useSetting<string[]>('ifesReadIds', [])
   const ifesReadIds = Array.isArray(ifesReadIdsRaw) ? ifesReadIdsRaw : []
@@ -292,6 +341,32 @@ export default function Hoje({
                         ? `${lowestFacultyMargin.course.name} · ${lowestFacultyMargin.margin >= 0 ? '+' : ''}${lowestFacultyMargin.margin.toFixed(1)}`
                         : 'sem notas registradas'}
                     </div>
+                  </div>
+                )}
+
+                {mod.id === 'gastos' && (
+                  <div className="stack small" style={{ marginTop: 6 }}>
+                    {gastosSummaryUnlocked && expenseSummary ? (
+                      <>
+                        <div>
+                          Total do mês: <b>{formatCents(expenseSummary.summary.totalCents)}</b>
+                        </div>
+                        <div className="muted">
+                          Categoria mais pesada:{' '}
+                          {expenseSummary.summary.byCategory[0]
+                            ? `${expenseSummary.summary.byCategory[0].category} · ${formatCents(expenseSummary.summary.byCategory[0].totalCents)}`
+                            : 'nenhuma no mês'}
+                        </div>
+                        <div className="muted">
+                          Próximo vencimento:{' '}
+                          {expenseSummary.nextDue
+                            ? `${expenseSummary.nextDue.item.name} · ${expenseSummary.nextDue.date}`
+                            : 'nenhum cadastrado'}
+                        </div>
+                      </>
+                    ) : (
+                      <div className="muted">Valores ocultos · toque para desbloquear Gastos.</div>
+                    )}
                   </div>
                 )}
               </div>

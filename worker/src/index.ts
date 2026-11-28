@@ -21,6 +21,7 @@ const CALENDAR_TOOL_NAMES = new Set([
   'editar_evento',
   'apagar_evento',
 ])
+const OWNER_ONLY_TOOL_NAMES = new Set(['propose_expense', 'get_expense_summary'])
 
 export interface RateLimiterBinding {
   limit(options: { key: string }): Promise<{ success: boolean }>
@@ -1658,11 +1659,11 @@ export async function handleRequest(
     return jsonResponse(200, remResult, origin)
   }
 
-  // Remove ferramentas do Google Calendar caso uma conta secundária as envie no payload de tools
+  // Remove ferramentas privadas caso uma conta secundária as envie no payload de tools
   if (!userIsOwner && Array.isArray(validatedFields.tools)) {
     validatedFields.tools = validatedFields.tools.filter((t: any) => {
       const fnName = typeof t?.function?.name === 'string' ? t.function.name : ''
-      return !CALENDAR_TOOL_NAMES.has(fnName)
+      return !CALENDAR_TOOL_NAMES.has(fnName) && !OWNER_ONLY_TOOL_NAMES.has(fnName)
     })
   }
 

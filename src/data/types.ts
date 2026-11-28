@@ -91,6 +91,33 @@ export interface BodyEntry extends SyncMeta {
   measures: Record<string, number>
 }
 
+export type ExpenseOrigin = 'manual' | 'assistant' | 'wallet'
+
+export interface Expense extends SyncMeta {
+  id: string
+  amountCents: number
+  category: string
+  merchantNote?: string
+  date: string
+  origin: ExpenseOrigin
+}
+
+export interface ExpenseLimit extends SyncMeta {
+  id: string
+  category: string
+  monthlyLimitCents: number
+}
+
+export interface RecurringExpense extends SyncMeta {
+  id: string
+  name: string
+  amountCents: number
+  dayOfMonth: number
+  category: string
+  reminderId?: string
+  reminderTriggerAt?: string
+}
+
 export interface Setting extends SyncMeta {
   key: string
   value: unknown
@@ -106,7 +133,18 @@ export interface Snapshot {
   data: Backup
 }
 
-export const TABLE_NAMES = ['exercises', 'routines', 'sessions', 'foods', 'meals', 'body', 'settings'] as const
+export const TABLE_NAMES = [
+  'exercises',
+  'routines',
+  'sessions',
+  'foods',
+  'meals',
+  'body',
+  'expenses',
+  'expenseLimits',
+  'recurringExpenses',
+  'settings',
+] as const
 export type TableName = (typeof TABLE_NAMES)[number]
 
 /** Entrada na fila de envio (outbox) para sincronização com o Firestore. */

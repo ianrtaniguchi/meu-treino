@@ -35,6 +35,7 @@ import Onibus from './tabs/Onibus'
 import Config from './tabs/Config'
 import Hoje from './tabs/Hoje'
 import Faculdade from './tabs/Faculdade'
+import Gastos from './tabs/Gastos'
 import Icon from './components/Icons'
 import FirstLoginPrompt from './components/FirstLoginPrompt'
 import {
@@ -54,8 +55,8 @@ import {
   type IfesNoticia,
 } from './lib/notifications'
 
-type Tab = 'hoje' | 'treino' | 'dieta' | 'corpo' | 'assistente' | 'noticias' | 'onibus' | 'faculdade' | 'config'
-const ALL_TABS: Tab[] = ['hoje', 'treino', 'dieta', 'corpo', 'assistente', 'noticias', 'onibus', 'faculdade', 'config']
+type Tab = 'hoje' | 'treino' | 'dieta' | 'corpo' | 'assistente' | 'noticias' | 'onibus' | 'faculdade' | 'gastos' | 'config'
+const ALL_TABS: Tab[] = ['hoje', 'treino', 'dieta', 'corpo', 'assistente', 'noticias', 'onibus', 'faculdade', 'gastos', 'config']
 /**
  * Barra inferior Liquid Glass 100% simétrica com 5 slots iguais (20% cada):
  * - Esquerda: hoje, treino
@@ -79,6 +80,7 @@ const TAB_LABELS: Record<Tab, string> = {
   noticias: 'Notícias do Ifes',
   onibus: 'Ônibus (Transcol / Ceturb-ES)',
   faculdade: 'Faculdade',
+  gastos: 'Gastos',
   config: 'Configurações',
 }
 const FITNESS_SECTION_STORAGE_KEY = 'meu_treino_fitness_section'
@@ -148,6 +150,7 @@ export default function App() {
   lockedRef.current = locked
   const [hasUnlockedThisSession, setHasUnlockedThisSession] = useState<boolean>(false)
   const [tabPressing, setTabPressing] = useState<boolean>(false)
+  const [gastosSummaryUnlocked, setGastosSummaryUnlocked] = useState(false)
   const navRef = useRef<HTMLElement | null>(null)
   const pointerDownRef = useRef<boolean>(false)
 
@@ -194,6 +197,12 @@ export default function App() {
   }
 
   const selectTab = (next: Tab) => {
+    if (
+      (next === 'noticias' || next === 'faculdade' || next === 'gastos') &&
+      syncStatus.user?.uid !== OWNER_UID
+    ) {
+      return
+    }
     if (next === 'dieta' || next === 'corpo') {
       selectFitnessSection(next)
       return
@@ -203,6 +212,15 @@ export default function App() {
     }
     setTab(next)
   }
+
+  useEffect(() => {
+    if (!ready || syncStatus.user?.uid === OWNER_UID) return
+    if (tab === 'noticias' || tab === 'faculdade' || tab === 'gastos') setTab('hoje')
+  }, [ready, syncStatus.user?.uid, tab])
+
+  useEffect(() => {
+    if (locked || syncStatus.user?.uid !== OWNER_UID || tab !== 'gastos') setGastosSummaryUnlocked(false)
+  }, [locked, syncStatus.user?.uid, tab])
 
   const toggleConfigTab = () => {
     if (tab === 'config') {
@@ -305,6 +323,7 @@ export default function App() {
 
   useEffect(() => {
     const onHidden = () => {
+      setGastosSummaryUnlocked(false)
       void recordHiddenTimestamp(Date.now())
     }
 
@@ -519,6 +538,7 @@ export default function App() {
               <Hoje
                 onNavigateTab={selectTab}
                 noticiasItems={noticiasItems}
+                gastosSummaryUnlocked={gastosSummaryUnlocked}
               />
             )}
             {tab === 'treino' && fitnessSection === 'treino' && <Treino />}
@@ -537,6 +557,14 @@ export default function App() {
             )}
             {tab === 'onibus' && <Onibus />}
             {tab === 'faculdade' && <Faculdade />}
+            {tab === 'gastos' && syncStatus.user?.uid === OWNER_UID && (
+              <Gastos
+                lockConfig={lockConfig}
+                globalLocked={isCurrentlyLocked}
+                onUnlocked={() => setGastosSummaryUnlocked(true)}
+                onOpenConfig={() => selectTab('config')}
+              />
+            )}
             {tab === 'config' && <Config />}
           </div>
         </main>
