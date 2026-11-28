@@ -12,6 +12,7 @@ export const SYNCABLE_SETTINGS = new Set([
   'streakGap',
   'ifesReadIds',
   'profileName',
+  'todayModulesConfig',
 ])
 
 export const pkOf = (table: TableName) => (table === 'settings' ? 'key' : 'id')

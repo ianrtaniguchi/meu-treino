@@ -1,5 +1,5 @@
 import { useLiveQuery } from 'dexie-react-hooks'
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { OWNER_UID } from './assistantConfig'
 import { autoSnapshotIfDue } from './data/backup'
 import { db, setSetting } from './data/db'
@@ -33,6 +33,7 @@ import Assistente from './tabs/Assistente'
 import Noticias from './tabs/Noticias'
 import Onibus from './tabs/Onibus'
 import Config from './tabs/Config'
+import Hoje from './tabs/Hoje'
 import Icon from './components/Icons'
 import FirstLoginPrompt from './components/FirstLoginPrompt'
 import {
@@ -40,6 +41,7 @@ import {
   ChromeNavContext,
   LockScreen,
   PromptTitle,
+  getContextualGreeting,
   type FitnessSection,
 } from './components/TerminalChrome'
 import { useUi } from './components/ui'
@@ -52,23 +54,24 @@ import {
   type IfesNoticia,
 } from './lib/notifications'
 
-type Tab = 'treino' | 'dieta' | 'corpo' | 'assistente' | 'noticias' | 'onibus' | 'config'
-const ALL_TABS: Tab[] = ['treino', 'dieta', 'corpo', 'assistente', 'noticias', 'onibus', 'config']
+type Tab = 'hoje' | 'treino' | 'dieta' | 'corpo' | 'assistente' | 'noticias' | 'onibus' | 'config'
+const ALL_TABS: Tab[] = ['hoje', 'treino', 'dieta', 'corpo', 'assistente', 'noticias', 'onibus', 'config']
 /**
  * Barra inferior Liquid Glass 100% simétrica com 5 slots iguais (20% cada):
- * - Esquerda: treino, noticias
+ * - Esquerda: hoje, treino
  * - Centro (50%): assistente (Esfera da IA --orb-size: 66px)
  * - Direita: onibus, config
  */
-const NAV_TABS: Tab[] = ['treino', 'noticias', 'assistente', 'onibus', 'config']
+const NAV_TABS: Tab[] = ['hoje', 'treino', 'assistente', 'onibus', 'config']
 const NAV_SLOTS: Array<{ tab: Tab; left: number; width: number }> = [
-  { tab: 'treino', left: 0, width: 0.2 },
-  { tab: 'noticias', left: 0.2, width: 0.2 },
+  { tab: 'hoje', left: 0, width: 0.2 },
+  { tab: 'treino', left: 0.2, width: 0.2 },
   { tab: 'assistente', left: 0.4, width: 0.2 },
   { tab: 'onibus', left: 0.6, width: 0.2 },
   { tab: 'config', left: 0.8, width: 0.2 },
 ]
 const TAB_LABELS: Record<Tab, string> = {
+  hoje: 'Hoje',
   treino: 'Treino, Dieta e Corpo',
   dieta: 'Dieta',
   corpo: 'Corpo',
@@ -124,12 +127,12 @@ export default function App() {
         return param as Tab
       }
     }
-    return 'treino'
+    return 'hoje'
   })
   const [fitnessSection, setFitnessSection] = useState<FitnessSection>(() =>
     getSavedFitnessSection(),
   )
-  const [lastNonConfigTab, setLastNonConfigTab] = useState<Tab>('treino')
+  const [lastNonConfigTab, setLastNonConfigTab] = useState<Tab>('hoje')
   // Saudação: com a trava ativa ela NÃO abre na carga (aparece após o desbloqueio); sem trava, segue o intervalo mínimo.
   const initialSplashRef = useRef<boolean>(
     !getLockedState() && shouldShowSplash(Date.now(), SPLASH_MIN_INTERVAL_MS),
@@ -511,6 +514,12 @@ export default function App() {
             </div>
           )}
           <div key={tab === 'treino' ? `treino-${fitnessSection}` : tab} className="tab-view-enter">
+            {tab === 'hoje' && (
+              <Hoje
+                onNavigateTab={selectTab}
+                noticiasItems={noticiasItems}
+              />
+            )}
             {tab === 'treino' && fitnessSection === 'treino' && <Treino />}
             {tab === 'treino' && fitnessSection === 'dieta' && <Dieta />}
             {tab === 'treino' && fitnessSection === 'corpo' && <Corpo />}

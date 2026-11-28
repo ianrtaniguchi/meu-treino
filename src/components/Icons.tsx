@@ -13,6 +13,7 @@ const P: Record<string, ReactNode> = {
   noticias: <path d="M4 5h13v14a2 2 0 0 0 2 2H6a2 2 0 0 1-2-2V5zm13 4h3v10a2 2 0 0 1-2 2M8 9h5M8 13h5M8 17h3" />,
   onibus: <path d="M5 6a3 3 0 0 1 3-3h8a3 3 0 0 1 3 3v10a2 2 0 0 1-2 2v2h-2v-2H9v2H7v-2a2 2 0 0 1-2-2V6zm0 6h14M8.5 15h.01M15.5 15h.01" />,
   config: <path d="M4 7h9M17 7h3M4 17h3M11 17h9M15 5v4M9 15v4" />,
+  hoje: <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />,
 }
 
 export type IconName =
@@ -23,6 +24,7 @@ export type IconName =
   | 'noticias'
   | 'onibus'
   | 'config'
+  | 'hoje'
 
 export default function Icon({ name }: { name: IconName }) {
   return (
