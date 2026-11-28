@@ -10,27 +10,27 @@ GROQ_FALLBACK_MODEL = "llama-3.3-70b-versatile"
 # Esforço de raciocínio enviado apenas para modelos gpt-oss ("low" | "medium" | "high")
 GROQ_REASONING_EFFORT = "medium"
 
-# Projeto Firebase para validação do JWT (iss e aud) e leitura REST do Firestore
+# Projeto Firebase para validação do JWT (iss e aud) e acesso REST ao Firestore
 FIREBASE_PROJECT_ID = "meu-treino-2007"
 
-# Controle de acesso por UID do Firebase Authentication:
-# Use "*" para permitir qualquer conta autenticada no Firebase Auth (suporte a contas secundárias),
-# ou informe uma lista de UIDs separados por vírgula em ALLOWED_UIDS / ALLOWED_UID.
-ALLOWED_UID = "*"
-ALLOWED_UIDS = "*"
+# UID do proprietário (único autorizado a usar as ferramentas do Google Calendar e com cota de 150 msgs / 30 fotos por dia)
+OWNER_UID = "tH4A7sYnH1WDUdBVDd1mfltMPdj2"
+
+# Lista explícita de UIDs autorizados separados por vírgula (NÃO aceita "*").
+# Adicione os 3 UIDs das contas secundárias após criá-las no Firebase Console:
+# Ex.: ALLOWED_UIDS = "tH4A7sYnH1WDUdBVDd1mfltMPdj2,UID_NAMORADA,UID_PAI,UID_MAE"
+ALLOWED_UIDS = "tH4A7sYnH1WDUdBVDd1mfltMPdj2"
 
 # Origens permitidas no CORS (separadas por vírgula)
 ALLOWED_ORIGINS = "https://ianrtaniguchi.github.io,http://localhost:5173"
 
-# A chave do Groq é lida pelo Worker diretamente do Firestore em users/{uid}.groqApiKey.
-# Opcionalmente, você pode definir um secret como fallback via:
+# Secrets obrigatórios no Worker:
 #   npx wrangler secret put GROQ_API_KEY
-# Para habilitar a agenda (Google Calendar), defina os secrets no Worker:
+#   npx wrangler secret put FCM_SERVICE_ACCOUNT
+# Para habilitar a agenda (Google Calendar, exclusiva do OWNER_UID):
 #   npx wrangler secret put GOOGLE_CLIENT_ID
 #   npx wrangler secret put GOOGLE_CLIENT_SECRET
 #   npx wrangler secret put GOOGLE_REFRESH_TOKEN
-# Para habilitar coleta de notícias do Ifes + envio de push (FCM HTTP v1 + Firestore), defina:
-#   npx wrangler secret put FCM_SERVICE_ACCOUNT
 
 [triggers]
 crons = ["*/5 * * * *"]

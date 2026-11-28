@@ -1,12 +1,26 @@
 import {
   executePushReminderTool,
   getIfesStatusReport,
+  getServiceAccountAccessToken,
+  parseServiceAccountSecret,
   processDuePushReminders,
   resetIfesCachesForTest,
   runIfesCron,
   sendTestPushToUserTokens,
 } from './ifes'
 import { handleCeturbProxyRequest, resetCeturbCachesForTest } from './ceturb'
+
+export const DEFAULT_OWNER_UID = 'tH4A7sYnH1WDUdBVDd1mfltMPdj2'
+export const OWNER_DAILY_MSG_LIMIT = 150
+export const OWNER_DAILY_PHOTO_LIMIT = 30
+export const SECONDARY_DAILY_MSG_LIMIT = 40
+export const SECONDARY_DAILY_PHOTO_LIMIT = 10
+const CALENDAR_TOOL_NAMES = new Set([
+  'criar_evento',
+  'listar_eventos',
+  'editar_evento',
+  'apagar_evento',
+])
 
 export interface RateLimiterBinding {
   limit(options: { key: string }): Promise<{ success: boolean }>
@@ -30,9 +44,11 @@ export interface Env {
   GROQ_VISION_MODEL?: string
   /** ID do projeto Firebase (padrão: "meu-treino-2007") */
   FIREBASE_PROJECT_ID?: string
-  /** UID autorizado ou "*" para qualquer usuário autenticado no Firebase Auth */
+  /** UID do proprietário (dono da agenda Google Calendar e cota de 150 msgs / 30 fotos) */
+  OWNER_UID?: string
+  /** UID autorizado (legado) ou lista em ALLOWED_UIDS */
   ALLOWED_UID?: string
-  /** Lista opcional de UIDs autorizados separados por vírgula (ou "*" para multi-usuário) */
+  /** Lista explícita de UIDs autorizados separados por vírgula (sem "*") */
   ALLOWED_UIDS?: string
   /** Origens permitidas no CORS separadas por vírgula */
   ALLOWED_ORIGINS?: string
@@ -107,47 +123,67 @@ export interface JsonWebKeyWithKid extends JsonWebKey {
 }
 
 let jwksCache: CachedJwks | null = null
-const firestoreKeyCache = new Map<string, { key: string; expiresAt: number }>()
 const memoryRateBuckets = new Map<string, { count: number; windowStartMs: number }>()
+const memoryDailyQuotaBuckets = new Map<string, number>()
 let googleAccessTokenCache: { accessToken: string; expiresAt: number } | null = null
 
 export function resetWorkerCachesForTest() {
   jwksCache = null
-  firestoreKeyCache.clear()
   memoryRateBuckets.clear()
+  memoryDailyQuotaBuckets.clear()
   googleAccessTokenCache = null
   resetIfesCachesForTest()
   resetCeturbCachesForTest()
 }
 
 /**
- * Verifica se o `uid` extraído do JWT do Firebase Auth está autorizado:
- * - Se `ALLOWED_UIDS` ou `ALLOWED_UID` contiver `"*"` (ou `"any"`), permite qualquer usuário autenticado no Firebase Auth (modo multi-conta).
- * - Se for uma lista de UIDs separados por vírgula (ex.: `"uid1,uid2"`), permite qualquer UID presente na lista.
- * - Recusa placeholders não configurados (`[SEU_UID]`, `[COLE_SEU_UID_AQUI]`) ou string vazia quando explicitamente definida como vazia.
+ * Verifica se o `uid` pertence ao proprietário principal (`OWNER_UID`).
+ * Apenas o proprietário tem acesso às ferramentas do Google Calendar e à cota ampliada (150 msgs / 30 fotos).
+ */
+export function isOwnerUid(uid: string | undefined, env: Env): boolean {
+  const cleanUid = (uid ?? '').trim()
+  if (!cleanUid) return false
+  const owner = (env.OWNER_UID ?? env.ALLOWED_UID?.split(',')[0] ?? DEFAULT_OWNER_UID).trim()
+  if (!owner || owner === '*' || owner === '[SEU_UID]' || owner === '[COLE_SEU_UID_AQUI]') {
+    return false
+  }
+  return cleanUid === owner
+}
+
+/**
+ * Verifica se o `uid` extraído do JWT do Firebase Auth está na lista explícita `ALLOWED_UIDS` / `ALLOWED_UID`.
+ * Recusa curingas (`"*"`, `"any"`), strings vazias e placeholders não configurados.
  */
 export function isUidAllowed(uid: string | undefined, env: Env): uid is string {
   const cleanUid = (uid ?? '').trim()
-  if (!cleanUid) return false
+  if (!cleanUid || cleanUid === '*' || cleanUid.toLowerCase() === 'any') return false
 
   const rawSource =
-    env.ALLOWED_UIDS !== undefined ? env.ALLOWED_UIDS : env.ALLOWED_UID !== undefined ? env.ALLOWED_UID : '*'
+    env.ALLOWED_UIDS !== undefined
+      ? env.ALLOWED_UIDS
+      : env.ALLOWED_UID !== undefined
+        ? env.ALLOWED_UID
+        : ''
   const raw = String(rawSource ?? '').trim()
   if (!raw) return false
 
   const tokens = raw
     .split(',')
     .map((s) => s.trim())
-    .filter((s) => Boolean(s) && s !== '[SEU_UID]' && s !== '[COLE_SEU_UID_AQUI]')
+    .filter(
+      (s) =>
+        Boolean(s) &&
+        s !== '*' &&
+        s.toLowerCase() !== 'any' &&
+        s !== '[SEU_UID]' &&
+        s !== '[COLE_SEU_UID_AQUI]',
+    )
 
   if (tokens.length === 0) return false
-  if (tokens.includes('*') || tokens.some((t) => t.toLowerCase() === 'any')) {
-    return true
-  }
   return tokens.includes(cleanUid)
 }
 
-// ---------- Validação e busca da chave do Groq no Firestore (REST) ----------
+// ---------- Validação da chave do Groq (exclusivamente via secret GROQ_API_KEY do Worker) ----------
 
 /**
  * Valida o formato da chave do Groq:
@@ -165,78 +201,16 @@ export function buildFirestoreUserDocUrl(projectId: string, uid: string): string
   return `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents/users/${encodeURIComponent(uid)}`
 }
 
-interface FirestoreUserDocResponse {
-  fields?: {
-    groqApiKey?: {
-      stringValue?: string
-    }
-  }
-}
-
 /**
- * Resolve a chave do Groq:
- * 1) Se `env.GROQ_API_KEY` (secret opcional do Worker) estiver definido e válido, usa-o;
- * 2) Caso contrário, consulta o cache em memória por `uid` (TTL de 5 min);
- * 3) Se não estiver em cache, faz GET REST em `users/{uid}` no Firestore com o Bearer ID token do usuário.
- * Lança erro genérico se ausente, recusado ou em formato inválido (nunca inclui a chave no erro).
+ * Resolve a chave do Groq exclusivamente a partir do secret `env.GROQ_API_KEY` do Worker.
+ * Não lê mais `groqApiKey` do Firestore.
  */
-async function resolveGroqApiKey(
-  env: Env,
-  projectId: string,
-  uid: string,
-  userIdToken: string,
-  fetcher: typeof fetch,
-  nowMs: number,
-): Promise<string> {
+function resolveGroqApiKey(env: Env): string {
   const secretKey = env.GROQ_API_KEY?.trim()
-  if (secretKey) {
-    if (!isValidGroqApiKey(secretKey)) {
-      throw new Error('chave do assistente não configurada')
-    }
-    return secretKey
-  }
-
-  const cached = firestoreKeyCache.get(uid)
-  if (cached && nowMs < cached.expiresAt) {
-    return cached.key
-  }
-
-  const url = buildFirestoreUserDocUrl(projectId, uid)
-  let res: Response
-  try {
-    res = await fetcher(url, {
-      method: 'GET',
-      headers: {
-        Authorization: `Bearer ${userIdToken}`,
-        Accept: 'application/json',
-      },
-    })
-  } catch {
+  if (!secretKey || !isValidGroqApiKey(secretKey)) {
     throw new Error('chave do assistente não configurada')
   }
-
-  if (!res.ok) {
-    throw new Error('chave do assistente não configurada')
-  }
-
-  let doc: FirestoreUserDocResponse
-  try {
-    doc = (await res.json()) as FirestoreUserDocResponse
-  } catch {
-    throw new Error('chave do assistente não configurada')
-  }
-
-  const key = doc?.fields?.groqApiKey?.stringValue
-  if (!isValidGroqApiKey(key)) {
-    throw new Error('chave do assistente não configurada')
-  }
-
-  firestoreKeyCache.set(uid, {
-    key,
-    expiresAt: nowMs + FIRESTORE_KEY_CACHE_TTL_MS,
-  })
-
-  return key
+  return secretKey
 }
 
 // ---------- JWKS do Google ----------
@@ -407,6 +381,121 @@ async function checkRateLimit(uid: string, env: Env, nowMs = Date.now()): Promis
   }
   existing.count += 1
   return true
+}
+
+export type DailyQuotaKind = 'msg' | 'photo'
+
+export function formatSaoPauloDayKey(nowMs = Date.now()): string {
+  // America/Sao_Paulo é UTC-3 fixo
+  const spDate = new Date(nowMs - 3 * 3600_000)
+  return spDate.toISOString().slice(0, 10)
+}
+
+export function getDailyQuotaLimit(uid: string, kind: DailyQuotaKind, env: Env): number {
+  const owner = isOwnerUid(uid, env)
+  if (kind === 'photo') {
+    return owner ? OWNER_DAILY_PHOTO_LIMIT : SECONDARY_DAILY_PHOTO_LIMIT
+  }
+  return owner ? OWNER_DAILY_MSG_LIMIT : SECONDARY_DAILY_MSG_LIMIT
+}
+
+export function buildFirestoreQuotaDocUrl(
+  projectId: string,
+  uid: string,
+  dayKey: string,
+  kind: DailyQuotaKind,
+): string {
+  const docId = `${uid}_${dayKey}_${kind}`
+  return `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents/usageQuotas/${encodeURIComponent(docId)}`
+}
+
+/**
+ * Verifica e incrementa a cota diária por UID (`msg` ou `photo`):
+ * 1) Se `env.RATE_LIMIT_KV` (Workers KV) estiver vinculado, persiste em `quota:{kind}:{uid}:{YYYY-MM-DD}` (TTL 48h).
+ * 2) Caso contrário, se `env.FCM_SERVICE_ACCOUNT` estiver configurado, persiste no Firestore em
+ *    `usageQuotas/{uid}_{YYYY-MM-DD}_{kind}` via REST API com o token OAuth2 da Service Account.
+ * 3) Em testes unitários sem KV nem Service Account, usa o mapa de teste `memoryDailyQuotaBuckets`.
+ */
+export async function checkAndConsumeDailyQuota(
+  uid: string,
+  kind: DailyQuotaKind,
+  env: Env,
+  deps: { fetcher?: typeof fetch; nowMs?: number } = {},
+): Promise<{ allowed: boolean; limit: number; used: number }> {
+  const fetcher = deps.fetcher ?? fetch
+  const nowMs = deps.nowMs ?? Date.now()
+  const dayKey = formatSaoPauloDayKey(nowMs)
+  const limit = getDailyQuotaLimit(uid, kind, env)
+  const kvKey = `quota:${kind}:${uid}:${dayKey}`
+
+  // 1. Workers KV
+  if (env.RATE_LIMIT_KV) {
+    const raw = await env.RATE_LIMIT_KV.get(kvKey)
+    const count = raw ? Number.parseInt(raw, 10) || 0 : 0
+    if (count >= limit) {
+      return { allowed: false, limit, used: count }
+    }
+    await env.RATE_LIMIT_KV.put(kvKey, String(count + 1), { expirationTtl: 172_800 })
+    return { allowed: true, limit, used: count + 1 }
+  }
+
+  // 2. Firestore (coleção usageQuotas via FCM_SERVICE_ACCOUNT)
+  if (env.FCM_SERVICE_ACCOUNT && env.FCM_SERVICE_ACCOUNT.trim()) {
+    const projectId = (env.FIREBASE_PROJECT_ID ?? 'meu-treino-2007').trim() || 'meu-treino-2007'
+    const sa = parseServiceAccountSecret(env.FCM_SERVICE_ACCOUNT, projectId)
+    const accessToken = await getServiceAccountAccessToken(sa, fetcher, nowMs)
+    const docUrl = buildFirestoreQuotaDocUrl(projectId, uid, dayKey, kind)
+
+    let count = 0
+    const getRes = await fetcher(docUrl, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' },
+    })
+    if (getRes.ok) {
+      const docJson = (await getRes.json()) as {
+        fields?: { count?: { integerValue?: string; doubleValue?: number } }
+      }
+      const rawInt = docJson?.fields?.count?.integerValue
+      const rawDbl = docJson?.fields?.count?.doubleValue
+      count =
+        rawInt !== undefined
+          ? Number.parseInt(String(rawInt), 10) || 0
+          : typeof rawDbl === 'number'
+            ? rawDbl
+            : 0
+    }
+
+    if (count >= limit) {
+      return { allowed: false, limit, used: count }
+    }
+
+    const nextCount = count + 1
+    await fetcher(docUrl, {
+      method: 'PATCH',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        fields: {
+          uid: { stringValue: uid },
+          day: { stringValue: dayKey },
+          kind: { stringValue: kind },
+          count: { integerValue: String(nextCount) },
+          updatedAt: { stringValue: new Date(nowMs).toISOString() },
+        },
+      }),
+    })
+    return { allowed: true, limit, used: nextCount }
+  }
+
+  // 3. Fallback apenas para testes unitários locais sem KV nem Service Account
+  const count = memoryDailyQuotaBuckets.get(kvKey) ?? 0
+  if (count >= limit) {
+    return { allowed: false, limit, used: count }
+  }
+  memoryDailyQuotaBuckets.set(kvKey, count + 1)
+  return { allowed: true, limit, used: count + 1 }
 }
 
 // ---------- CORS e Respostas JSON ----------
@@ -1355,9 +1444,20 @@ export async function handleRequest(
 
     let groqKey: string
     try {
-      groqKey = await resolveGroqApiKey(env, projectId, jwtPayload.sub, userIdToken, fetcher, nowMs)
+      groqKey = resolveGroqApiKey(env)
     } catch {
       return jsonResponse(503, { error: 'chave do assistente não configurada' }, origin)
+    }
+
+    const quota = await checkAndConsumeDailyQuota(jwtPayload.sub, 'msg', env, { fetcher, nowMs })
+    if (!quota.allowed) {
+      return jsonResponse(
+        429,
+        {
+          error: `error: limite diário de mensagens atingido (${quota.limit}/dia). Tente novamente amanhã.`,
+        },
+        origin,
+      )
     }
 
     const rawName = typeof (audioBlob as File).name === 'string' ? (audioBlob as File).name : undefined
@@ -1396,9 +1496,22 @@ export async function handleRequest(
     }
     let visionKey: string
     try {
-      visionKey = await resolveGroqApiKey(env, projectId, jwtPayload.sub, userIdToken, fetcher, nowMs)
+      visionKey = resolveGroqApiKey(env)
     } catch {
       return jsonResponse(503, { error: 'chave do assistente não configurada' }, origin)
+    }
+    const photoQuota = await checkAndConsumeDailyQuota(jwtPayload.sub, 'photo', env, {
+      fetcher,
+      nowMs,
+    })
+    if (!photoQuota.allowed) {
+      return jsonResponse(
+        429,
+        {
+          error: `error: limite diário de fotos do prato atingido (${photoQuota.limit}/dia). Tente novamente amanhã.`,
+        },
+        origin,
+      )
     }
     const out = await analyzeMealImage(image, visionKey, env, fetcher)
     return jsonResponse(out.status, out.body, origin)
@@ -1411,9 +1524,17 @@ export async function handleRequest(
     return jsonResponse(400, { error: `error: ${(e as Error).message}` }, origin)
   }
 
-  // Se for uma ação de ferramenta da agenda (criar_evento, listar_eventos, editar_evento, apagar_evento),
-  // executa diretamente no Worker usando as credenciais OAuth do Google Calendar.
+  const userIsOwner = isOwnerUid(jwtPayload.sub, env)
+
+  // As ferramentas do Google Calendar funcionam SOMENTE para o OWNER_UID
   if (validatedFields.calendar_action) {
+    if (!userIsOwner) {
+      return jsonResponse(
+        403,
+        { error: 'error: as ferramentas do Google Calendar são restritas ao proprietário.' },
+        origin,
+      )
+    }
     const calResult = await executeCalendarTool(
       validatedFields.calendar_action.tool,
       validatedFields.calendar_action.args,
@@ -1434,19 +1555,31 @@ export async function handleRequest(
     return jsonResponse(200, remResult, origin)
   }
 
-  // Obtém a chave do Groq (secret opcional ou Firestore users/{uid}.groqApiKey com cache de 5 min)
+  // Remove ferramentas do Google Calendar caso uma conta secundária as envie no payload de tools
+  if (!userIsOwner && Array.isArray(validatedFields.tools)) {
+    validatedFields.tools = validatedFields.tools.filter((t: any) => {
+      const fnName = typeof t?.function?.name === 'string' ? t.function.name : ''
+      return !CALENDAR_TOOL_NAMES.has(fnName)
+    })
+  }
+
+  // Obtém a chave do Groq exclusivamente do secret GROQ_API_KEY do Worker
   let groqApiKey: string
   try {
-    groqApiKey = await resolveGroqApiKey(
-      env,
-      projectId,
-      jwtPayload.sub,
-      userIdToken,
-      fetcher,
-      nowMs,
-    )
+    groqApiKey = resolveGroqApiKey(env)
   } catch {
     return jsonResponse(503, { error: 'chave do assistente não configurada' }, origin)
+  }
+
+  const msgQuota = await checkAndConsumeDailyQuota(jwtPayload.sub, 'msg', env, { fetcher, nowMs })
+  if (!msgQuota.allowed) {
+    return jsonResponse(
+      429,
+      {
+        error: `error: limite diário de mensagens atingido (${msgQuota.limit}/dia). Tente novamente amanhã.`,
+      },
+      origin,
+    )
   }
 
   const primaryModel = (env.GROQ_MODEL ?? DEFAULT_MODEL).trim() || DEFAULT_MODEL

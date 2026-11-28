@@ -4,7 +4,6 @@ import {
   buildFirestoreUserDocUrl,
   criar_evento,
   editar_evento,
-  FIRESTORE_KEY_CACHE_TTL_MS,
   GOOGLE_CALENDAR_EVENTS_URL,
   GOOGLE_JWKS_URL,
   GOOGLE_OAUTH_TOKEN_URL,
@@ -49,11 +48,13 @@ async function signTestJwt(
 
 function makeBaseEnv(): Env {
   return {
+    GROQ_API_KEY: VALID_FIRESTORE_KEY,
     GROQ_MODEL: 'openai/gpt-oss-120b',
     GROQ_FALLBACK_MODEL: 'llama-3.3-70b-versatile',
     GROQ_REASONING_EFFORT: 'medium',
     FIREBASE_PROJECT_ID: PROJECT_ID,
-    ALLOWED_UID: MY_UID,
+    OWNER_UID: MY_UID,
+    ALLOWED_UIDS: MY_UID,
     ALLOWED_ORIGINS: 'https://ianrtaniguchi.github.io,http://localhost:5173',
     RATE_LIMIT_PER_MIN: '20',
   }
@@ -235,15 +236,8 @@ describe('Cloudflare Worker Proxy (/chat)', () => {
     expect(res.status).toBe(403)
   })
 
-  it('suporta múltiplas contas (ALLOWED_UIDS com lista separada por vírgula ou ALLOWED_UID="*") isoladas pelo uid do token', async () => {
+  it('suporta múltiplas contas em ALLOWED_UIDS (lista explícita), recusa "*" e bloqueia Google Calendar para contas secundárias', async () => {
     const secondaryUid = 'uid-conta-secundaria-777'
-    const multiEnv: Env = {
-      ...makeBaseEnv(),
-      ALLOWED_UID: '*',
-      GROQ_API_KEY: VALID_FIRESTORE_KEY,
-    }
-    const fetcher = createMockFetcher()
-
     const secondaryToken = await signTestJwt({
       iss: `https://securetoken.google.com/${PROJECT_ID}`,
       aud: PROJECT_ID,
@@ -252,7 +246,33 @@ describe('Cloudflare Worker Proxy (/chat)', () => {
       exp: nowSec + 3600,
     })
 
-    const makeSecondaryReq = () =>
+    let forwardedTools: any[] = []
+    const fetcher = createMockFetcher({
+      onGroqCall: (init) => {
+        const body = JSON.parse(String(init?.body ?? '{}'))
+        forwardedTools = body.tools ?? []
+        return new Response(
+          JSON.stringify({
+            id: 'chatcmpl-sec-1',
+            choices: [
+              {
+                index: 0,
+                message: { role: 'assistant', content: 'Olá, conta secundária!' },
+                finish_reason: 'stop',
+              },
+            ],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        )
+      },
+    })
+
+    // 1. Curinga "*" em ALLOWED_UIDS / ALLOWED_UID é recusado (403)
+    const wildcardEnv: Env = {
+      ...makeBaseEnv(),
+      ALLOWED_UIDS: '*',
+    }
+    const makeSecondaryReq = (payload: Record<string, unknown>) =>
       new Request('https://worker.example.com/chat', {
         method: 'POST',
         headers: {
@@ -260,19 +280,131 @@ describe('Cloudflare Worker Proxy (/chat)', () => {
           Authorization: `Bearer ${secondaryToken}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ messages: [{ role: 'user', content: 'oi da conta secundária' }] }),
+        body: JSON.stringify(payload),
       })
-    const res = await handleRequest(makeSecondaryReq(), multiEnv, { fetcher, nowMs })
-    expect(res.status).toBe(200)
 
-    // Lista explícita em ALLOWED_UIDS também aceita a conta secundária
+    const resWildcard = await handleRequest(
+      makeSecondaryReq({ messages: [{ role: 'user', content: 'oi' }] }),
+      wildcardEnv,
+      { fetcher, nowMs },
+    )
+    expect(resWildcard.status).toBe(403)
+
+    // 2. Lista explícita em ALLOWED_UIDS aceita a conta secundária e remove ferramentas do Google Calendar do payload
     const listEnv: Env = {
       ...makeBaseEnv(),
+      OWNER_UID: MY_UID,
       ALLOWED_UIDS: `${MY_UID}, ${secondaryUid}`,
-      GROQ_API_KEY: VALID_FIRESTORE_KEY,
     }
-    const resListOk = await handleRequest(makeSecondaryReq(), listEnv, { fetcher, nowMs })
+    const resListOk = await handleRequest(
+      makeSecondaryReq({
+        messages: [{ role: 'user', content: 'oi da conta secundária' }],
+        tools: [
+          { type: 'function', function: { name: 'propose_meal', parameters: {} } },
+          { type: 'function', function: { name: 'criar_evento', parameters: {} } },
+          { type: 'function', function: { name: 'listar_eventos', parameters: {} } },
+        ],
+      }),
+      listEnv,
+      { fetcher, nowMs },
+    )
     expect(resListOk.status).toBe(200)
+    expect(forwardedTools.map((t) => t.function.name)).toEqual(['propose_meal'])
+
+    // 3. Conta secundária tentando executar calendar_action diretamente recebe HTTP 403
+    const resCalForbidden = await handleRequest(
+      makeSecondaryReq({
+        calendar_action: {
+          tool: 'listar_eventos',
+          args: { inicio: '2026-11-17T00:00:00-03:00', fim: '2026-11-17T23:59:59-03:00' },
+        },
+      }),
+      listEnv,
+      { fetcher, nowMs },
+    )
+    expect(resCalForbidden.status).toBe(403)
+    const calErrBody = (await resCalForbidden.json()) as { error: string }
+    expect(calErrBody.error).toContain('Google Calendar')
+  })
+
+  it('aplica cota diária persistente por usuário (40 msgs e 10 fotos para conta secundária; 150 msgs e 30 fotos para o dono)', async () => {
+    const secondaryUid = 'uid-namorada-123'
+    const kvStore = new Map<string, string>()
+    const mockKv = {
+      async get(key: string) {
+        return kvStore.get(key) ?? null
+      },
+      async put(key: string, value: string) {
+        kvStore.set(key, value)
+      },
+    }
+
+    const env: Env = {
+      ...makeBaseEnv(),
+      OWNER_UID: MY_UID,
+      ALLOWED_UIDS: `${MY_UID},${secondaryUid}`,
+      RATE_LIMIT_PER_MIN: '500',
+      RATE_LIMIT_KV: mockKv,
+    }
+    const fetcher = createMockFetcher({
+      onGroqCall: () =>
+        new Response(
+          JSON.stringify({
+            choices: [{ index: 0, message: { role: 'assistant', content: '{"itens":[]}' } }],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+    })
+
+    const secToken = await signTestJwt({
+      iss: `https://securetoken.google.com/${PROJECT_ID}`,
+      aud: PROJECT_ID,
+      sub: secondaryUid,
+      iat: nowSec - 10,
+      exp: nowSec + 3600,
+    })
+
+    // Pré-popula KV com 39 mensagens usadas hoje pela conta secundária
+    const dayKey = new Date(nowMs - 3 * 3600_000).toISOString().slice(0, 10)
+    kvStore.set(`quota:msg:${secondaryUid}:${dayKey}`, '39')
+
+    const makeChat = () =>
+      new Request('https://worker.example.com/chat', {
+        method: 'POST',
+        headers: {
+          Origin: ALLOWED_ORIGIN,
+          Authorization: `Bearer ${secToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ messages: [{ role: 'user', content: 'msg 40' }] }),
+      })
+
+    // 40ª mensagem passa
+    const res40 = await handleRequest(makeChat(), env, { fetcher, nowMs })
+    expect(res40.status).toBe(200)
+    expect(kvStore.get(`quota:msg:${secondaryUid}:${dayKey}`)).toBe('40')
+
+    // 41ª mensagem é bloqueada com 429 (40/dia)
+    const res41 = await handleRequest(makeChat(), env, { fetcher, nowMs })
+    expect(res41.status).toBe(429)
+    const err41 = (await res41.json()) as { error: string }
+    expect(err41.error).toContain('40/dia')
+
+    // Pré-popula KV com 10 fotos usadas hoje pela conta secundária -> 11ª foto retorna 429 (10/dia)
+    kvStore.set(`quota:photo:${secondaryUid}:${dayKey}`, '10')
+    const photoReq = new Request('https://worker.example.com/analyze-meal', {
+      method: 'POST',
+      headers: {
+        Origin: ALLOWED_ORIGIN,
+        Authorization: `Bearer ${secToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ image: 'data:image/jpeg;base64,AAAA' }),
+    })
+    const resPhoto11 = await handleRequest(photoReq, env, { fetcher, nowMs })
+    expect(resPhoto11.status).toBe(429)
+    const errPhoto = (await resPhoto11.json()) as { error: string }
+    expect(errPhoto.error).toContain('10/dia')
   })
 
   it('recusa corpo maior que 64 KB com 413', async () => {
@@ -331,25 +463,16 @@ describe('Cloudflare Worker Proxy (/chat)', () => {
     expect(body.error).toContain('model')
   })
 
-  it('busca chave no Firestore com sucesso, aplica cache de 5 minutos por UID e força openai/gpt-oss-120b com reasoning_effort', async () => {
+  it('usa exclusivamente o secret GROQ_API_KEY do Worker (sem consultar o Firestore) e força openai/gpt-oss-120b com reasoning_effort', async () => {
     const env = { ...makeBaseEnv(), RATE_LIMIT_PER_MIN: '5' }
     let firestoreCalls = 0
-    let firestoreAuthHeader = ''
     let capturedBody: Record<string, any> = {}
     let capturedGroqAuth = ''
 
     const fetcher = createMockFetcher({
-      onFirestoreCall: (init) => {
+      onFirestoreCall: () => {
         firestoreCalls++
-        firestoreAuthHeader = new Headers(init?.headers).get('Authorization') ?? ''
-        return new Response(
-          JSON.stringify({
-            fields: {
-              groqApiKey: { stringValue: VALID_FIRESTORE_KEY },
-            },
-          }),
-          { status: 200, headers: { 'Content-Type': 'application/json' } },
-        )
+        return new Response('{}', { status: 200 })
       },
       onGroqCall: (init) => {
         capturedBody = JSON.parse(String(init?.body ?? '{}'))
@@ -396,11 +519,9 @@ describe('Cloudflare Worker Proxy (/chat)', () => {
         }),
       })
 
-    // 1ª chamada: busca no Firestore
     const res1 = await handleRequest(makeValidReq(), env, { fetcher, nowMs })
     expect(res1.status).toBe(200)
-    expect(firestoreCalls).toBe(1)
-    expect(firestoreAuthHeader).toBe(`Bearer ${token}`)
+    expect(firestoreCalls).toBe(0)
     expect(capturedGroqAuth).toBe(`Bearer ${VALID_FIRESTORE_KEY}`)
     expect(capturedBody.model).toBe('openai/gpt-oss-120b')
     expect(capturedBody.reasoning_effort).toBe('medium')
@@ -409,19 +530,6 @@ describe('Cloudflare Worker Proxy (/chat)', () => {
     const data1 = (await res1.json()) as any
     expect(data1.choices[0].message.content).toBe('Bons treinos!')
     expect(data1.choices[0].message.reasoning).toBeUndefined()
-
-    // 2ª chamada dentro dos 5 minutos: usa cache em memória (NÃO consulta o Firestore de novo)
-    const res2 = await handleRequest(makeValidReq(), env, { fetcher, nowMs: nowMs + 60_000 })
-    expect(res2.status).toBe(200)
-    expect(firestoreCalls).toBe(1)
-
-    // 3ª chamada após expirar o TTL de 5 minutos: consulta o Firestore novamente
-    const res3 = await handleRequest(makeValidReq(), env, {
-      fetcher,
-      nowMs: nowMs + FIRESTORE_KEY_CACHE_TTL_MS + 1000,
-    })
-    expect(res3.status).toBe(200)
-    expect(firestoreCalls).toBe(2)
   })
 
   it('tenta GROQ_FALLBACK_MODEL (sem reasoning_effort) uma vez se o modelo principal retornar 404 ou 5xx', async () => {
@@ -503,53 +611,27 @@ describe('Cloudflare Worker Proxy (/chat)', () => {
         }),
       })
 
-    // 1. Campo groqApiKey ausente no documento users/{uid}
-    const fetcherMissingField = createMockFetcher({
-      onFirestoreCall: () =>
-        new Response(JSON.stringify({ fields: {} }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        }),
-    })
-    const resMissing = await handleRequest(makeReq(), env, { fetcher: fetcherMissingField, nowMs })
+    // 1. Secret GROQ_API_KEY ausente no Worker
+    const envWithoutKey: Env = { ...env, GROQ_API_KEY: undefined }
+    const resMissing = await handleRequest(makeReq(), envWithoutKey, { fetcher: createMockFetcher(), nowMs })
     expect(resMissing.status).toBe(503)
     expect(await resMissing.json()).toEqual({ error: 'chave do assistente não configurada' })
 
-    // 2. Firestore recusa (403 Forbidden ou 404 Not Found)
-    resetWorkerCachesForTest()
-    const fetcherRefused = createMockFetcher({
-      onFirestoreCall: () =>
-        new Response(JSON.stringify({ error: { status: 'PERMISSION_DENIED' } }), {
-          status: 403,
-          headers: { 'Content-Type': 'application/json' },
-        }),
-    })
-    const resRefused = await handleRequest(makeReq(), env, { fetcher: fetcherRefused, nowMs })
-    expect(resRefused.status).toBe(503)
-    expect(await resRefused.json()).toEqual({ error: 'chave do assistente não configurada' })
-
-    // 3. Formato inválido da chave (não começa com gsk_, curta demais ou contém espaço)
+    // 2. Formato inválido da chave (não começa com gsk_, curta demais ou contém espaço)
     expect(isValidGroqApiKey('chave-sem-prefixo-123456789012345')).toBe(false)
     expect(isValidGroqApiKey('gsk_curta')).toBe(false)
     expect(isValidGroqApiKey('gsk_com espaco12345678901234567890')).toBe(false)
     expect(isValidGroqApiKey(VALID_FIRESTORE_KEY)).toBe(true)
 
-    resetWorkerCachesForTest()
     const badKey = 'gsk_com espaco invalido 1234567890'
-    const fetcherBadFormat = createMockFetcher({
-      onFirestoreCall: () =>
-        new Response(
-          JSON.stringify({ fields: { groqApiKey: { stringValue: badKey } } }),
-          { status: 200, headers: { 'Content-Type': 'application/json' } },
-        ),
-    })
-    const resBadFormat = await handleRequest(makeReq(), env, { fetcher: fetcherBadFormat, nowMs })
+    const envBadKey: Env = { ...env, GROQ_API_KEY: badKey }
+    const resBadFormat = await handleRequest(makeReq(), envBadKey, { fetcher: createMockFetcher(), nowMs })
     expect(resBadFormat.status).toBe(503)
     const bodyBadFormat = JSON.stringify(await resBadFormat.json())
     expect(bodyBadFormat).toBe(JSON.stringify({ error: 'chave do assistente não configurada' }))
     expect(bodyBadFormat).not.toContain(badKey)
 
-    // 4. Mesmo se o Groq ecoar a chave num erro ou resposta, ela nunca vaza ao cliente nem em logs
+    // 3. Mesmo se o Groq ecoar a chave num erro ou resposta, ela nunca vaza ao cliente nem em logs
     resetWorkerCachesForTest()
     const fetcherEchoLeak = createMockFetcher({
       onGroqCall: () =>
