@@ -12,8 +12,8 @@
   --border: #1e2430;
   --border-subtle: rgba(255, 255, 255, 0.06);
   --text: #e7e4dc;
-  --muted: #8a93a3;
-  --muted-dim: #5e6778;
+  --muted: #939cad;
+  --muted-dim: #7f899c;
 
   /* Heatmap: escala azul-ardósia fria nos níveis intermediários e ouro fosco no pico (l4) */
   --g0: #141821;
@@ -25,10 +25,12 @@
   /* Acento único contido (mapeado também em --green e --ai para compatibilidade com classes existentes) */
   --accent: #b89b5e;
   --accent-light: #d4bc8b;
+  --accent-text: #b89b5e;
   --green: #b89b5e;
   --ai: #b89b5e;
   --amber: #c49a45;
   --red: #c95b56;
+  --red-text: #df6f6a;
   --glow: none;
   --cell-stroke: rgba(231, 228, 220, 0.04);
   --overlay-bg: rgba(6, 8, 11, 0.78);
@@ -117,8 +119,8 @@
   --border: #dfddd5;
   --border-subtle: rgba(28, 31, 36, 0.07);
   --text: #1c1e21;
-  --muted: #686e78;
-  --muted-dim: #8c929c;
+  --muted: #565c66;
+  --muted-dim: #686e78;
 
   --g0: #ebe9e2;
   --g1: #d4dce8;
@@ -128,10 +130,12 @@
 
   --accent: #8c6d32;
   --accent-light: #6e5423;
+  --accent-text: #6e5423;
   --green: #8c6d32;
   --ai: #8c6d32;
   --amber: #a16207;
   --red: #b93832;
+  --red-text: #b93832;
   --glow: none;
   --cell-stroke: rgba(28, 30, 33, 0.06);
   --overlay-bg: rgba(18, 20, 24, 0.42);
@@ -201,8 +205,8 @@
   --border: #ead3dc;
   --border-subtle: rgba(66, 40, 51, 0.07);
   --text: #332028;
-  --muted: #826471;
-  --muted-dim: #a38793;
+  --muted: #6e505d;
+  --muted-dim: #7d5f6c;
 
   --g0: #f3e4ea;
   --g1: #e5ced8;
@@ -210,12 +214,14 @@
   --g3: #bd88a2;
   --g4: #b55d7a;
 
-  --accent: #b55d7a;
-  --accent-light: #94445f;
-  --green: #b55d7a;
-  --ai: #b55d7a;
+  --accent: #ad5270;
+  --accent-light: #8c3c58;
+  --accent-text: #8c3c58;
+  --green: #ad5270;
+  --ai: #ad5270;
   --amber: #a86428;
   --red: #c93b54;
+  --red-text: #b32944;
   --glow: none;
   --cell-stroke: rgba(181, 93, 122, 0.08);
   --overlay-bg: rgba(51, 32, 40, 0.38);
@@ -553,9 +559,9 @@ h3 {
 }
 .muted { color: var(--muted); }
 .small { font-size: 12.5px; }
-.green { color: var(--accent); }
+.green { color: var(--accent-text); }
 .amber { color: var(--amber); }
-.red { color: var(--red); }
+.red { color: var(--red-text); }
 .big {
   font-family: var(--serif);
   font-size: 32px;
@@ -780,7 +786,7 @@ button.ai {
 button.danger {
   background: var(--btn-danger-bg);
   border-color: var(--btn-danger-border);
-  color: var(--red);
+  color: var(--red-text);
 }
 button.ghost {
   background: transparent;
@@ -1093,7 +1099,7 @@ label.field > input, label.field > select, label.field > textarea { margin-top: 
   border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 24px;
 }
 .lock-cmd { font-family: var(--serif); font-size: 22px; font-weight: 400; color: var(--text); }
-.lock-err, .lock-error { font-size: 12px; color: var(--red); }
+.lock-err, .lock-error { font-size: 12px; color: var(--red-text); }
 
 /* Tela de Abertura (Splash de Saudação Contextual em Newsreader) */
 .splash-overlay {
