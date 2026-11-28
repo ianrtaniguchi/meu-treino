@@ -980,6 +980,106 @@ describe('Cloudflare Worker Proxy (/chat)', () => {
     expect((await handleRequest(bigChat, env, { fetcher: badFetcher, nowMs })).status).toBe(413)
   })
 
+  it('/analyze-assistant-photo: roteia refeição, gasto e evento para propostas seguras e restringe módulos pessoais', async () => {
+    const secondaryUid = 'uid-conta-secundaria-777'
+    const env: Env = { ...makeBaseEnv(), ALLOWED_UIDS: `${MY_UID},${secondaryUid}` }
+    let visionContent = ''
+    let groqBody: any = null
+    const fetcher = createMockFetcher({
+      onGroqCall: (init) => {
+        groqBody = JSON.parse(String(init?.body ?? '{}'))
+        return new Response(
+          JSON.stringify({ choices: [{ message: { content: visionContent } }] }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        )
+      },
+    })
+    const tokenFor = (uid: string) =>
+      signTestJwt({
+        iss: `https://securetoken.google.com/${PROJECT_ID}`,
+        aud: PROJECT_ID,
+        sub: uid,
+        iat: nowSec - 10,
+        exp: nowSec + 3600,
+      })
+    const image = `data:image/jpeg;base64,${'A'.repeat(100)}`
+    const post = async (uid: string, text = '') =>
+      handleRequest(
+        new Request('https://worker.example.com/analyze-assistant-photo', {
+          method: 'POST',
+          headers: {
+            Origin: ALLOWED_ORIGIN,
+            Authorization: `Bearer ${await tokenFor(uid)}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ image, text }),
+        }),
+        env,
+        { fetcher, nowMs },
+      )
+
+    visionContent = JSON.stringify({
+      intent: 'meal',
+      meal: {
+        date: '2026-03-16',
+        type: 'almoco',
+        items: [{ name: 'Arroz', qty: '1 porção', kcal: 200, p: 4, c: 42, g: 1 }],
+      },
+    })
+    const mealRes = await post(MY_UID, 'registre meu almoço')
+    expect(mealRes.status).toBe(200)
+    expect((await mealRes.json()).intent).toBe('meal')
+    expect(groqBody.model).toBe('qwen/qwen3.6-27b')
+    expect(groqBody.messages[0].content[1].image_url.url).toBe(image)
+    expect(groqBody.messages[0].content[0].text).toContain('registre meu almoço')
+
+    visionContent = JSON.stringify({
+      intent: 'expense',
+      expense: {
+        date: '2026-03-16',
+        amountCents: 2590,
+        category: 'Alimentação',
+        merchant: 'Mercado agência 1234 conta 56789-0',
+        cpf: '123.456.789-09',
+        rawText: 'OCR que não deve ser devolvido',
+      },
+    })
+    const expenseRes = await post(MY_UID, 'comprovante')
+    expect(expenseRes.status).toBe(200)
+    expect(await expenseRes.json()).toEqual({
+      intent: 'expense',
+      expense: { date: '2026-03-16', amountCents: 2590, category: 'Alimentação' },
+    })
+
+    visionContent = JSON.stringify({
+      intent: 'event',
+      event: {
+        title: 'Prova de cálculo',
+        startAt: '2026-03-20T14:00:00-03:00',
+        location: 'Sala 12',
+        description: 'Texto adicional não retornado pela proposta',
+      },
+    })
+    const eventRes = await post(MY_UID, 'foto do aviso da prova')
+    expect(eventRes.status).toBe(200)
+    expect(await eventRes.json()).toEqual({
+      intent: 'event',
+      event: {
+        title: 'Prova de cálculo',
+        startAt: '2026-03-20T14:00:00-03:00',
+        location: 'Sala 12',
+      },
+    })
+
+    const secondaryEventRes = await post(secondaryUid, 'foto do aviso da prova')
+    expect(secondaryEventRes.status).toBe(403)
+
+    const invalidTextRes = await post(MY_UID, 'CPF 123.456.789-09')
+    expect(invalidTextRes.status).toBe(400)
+    const bankDetailsRes = await post(MY_UID, 'anote na foto: agência 1234 conta 56789-0')
+    expect(bankDetailsRes.status).toBe(400)
+  })
+
   it('/analyze-faculty-schedule: analisa a grade usando a cota de fotos e valida o JSON', async () => {
     const env = makeBaseEnv()
     let groqBody: any = null

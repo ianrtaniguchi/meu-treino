@@ -92,6 +92,11 @@ const MEAL_ANALYSIS_PROMPT = `Você é um nutricionista. Analise a foto do prato
 Responda APENAS com JSON válido, sem texto antes ou depois, exatamente neste formato:
 {"itens":[{"nome":"","gramas":0,"kcal":0,"proteina_g":0,"carbo_g":0,"gordura_g":0,"confianca":"alta|media|baixa"}]}
 Regras: nomes em português do Brasil; valores numéricos (não strings) para a porção total visível de cada item; "confianca" deve ser "alta", "media" ou "baixa". Se a imagem não tiver comida, responda {"itens":[]}.`
+const ASSISTANT_PHOTO_PROMPT = `Analise a foto e o texto opcional e retorne apenas JSON com uma intenção e uma proposta:
+{"intent":"meal|expense|event|unclear","meal":{"date":"AAAA-MM-DD","type":"cafe|almoco|jantar|lanche","items":[{"name":"","qty":"","kcal":0,"p":0,"c":0,"g":0}]},"expense":{"date":"AAAA-MM-DD","amountCents":0,"category":"","merchant":""},"event":{"title":"","startAt":"ISO-8601 com fuso America/Sao_Paulo","endAt":"","location":"","description":""},"message":""}
+Escolha meal para alimento/refeição, expense para recibo/nota/comprovante e event para compromisso, agenda, prova ou prazo; se não for possível identificar os dados essenciais, use unclear e explique brevemente em message.
+Para refeição, estime apenas alimentos visíveis e porções. Para gasto, extraia somente valor total em centavos, categoria, estabelecimento e data. NUNCA extraia, reproduza ou retorne número de cartão, CPF, conta, agência, chave PIX ou dado bancário; não inclua texto OCR bruto.
+Para evento, título e data/hora são obrigatórios. Não crie nem salve nada; apenas produza uma proposta. Use português do Brasil e não invente campos ilegíveis.`
 const FACULTY_SCHEDULE_ANALYSIS_PROMPT = `Leia a grade de horários das aulas na imagem. Não invente dados ilegíveis; use strings vazias para campos ausentes e null para professor ausente.
 Responda APENAS com JSON válido, sem texto antes ou depois, exatamente neste formato:
 {"aulas":[{"disciplina":"","dia":"segunda-feira","inicio":"08:00","fim":"10:00","sala":"","professor":null}]}
@@ -134,12 +139,14 @@ export interface JsonWebKeyWithKid extends JsonWebKey {
 let jwksCache: CachedJwks | null = null
 const memoryRateBuckets = new Map<string, { count: number; windowStartMs: number }>()
 const memoryDailyQuotaBuckets = new Map<string, number>()
+const memorySuggestionCache = new Map<string, { expiresAt: number; suggestions: string[] }>()
 let googleAccessTokenCache: { accessToken: string; expiresAt: number } | null = null
 
 export function resetWorkerCachesForTest() {
   jwksCache = null
   memoryRateBuckets.clear()
   memoryDailyQuotaBuckets.clear()
+  memorySuggestionCache.clear()
   googleAccessTokenCache = null
   resetIfesCachesForTest()
   resetCeturbCachesForTest()
@@ -1218,6 +1225,249 @@ async function analyzeMealImage(
   }
 }
 
+function validLocalDate(value: unknown): value is string {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
+  const [year, month, day] = value.split('-').map(Number)
+  const parsed = new Date(Date.UTC(year, month - 1, day))
+  return parsed.getUTCFullYear() === year && parsed.getUTCMonth() === month - 1 && parsed.getUTCDate() === day
+}
+
+function safePhotoLabel(value: unknown, maxLength: number): string {
+  if (typeof value !== 'string') return ''
+  const safe = value.trim().slice(0, maxLength)
+  return containsFinancialIdentifier(safe) ? '' : safe
+}
+
+function containsFinancialIdentifier(value: string): boolean {
+  const digitCount = value.replace(/\D/g, '').length
+  if (digitCount >= 6) return true
+  return /\b(cart[aã]o|conta|ag[eê]ncia|banco|iban|swift|chave\s+pix|pix)\b/i.test(value) && digitCount > 0
+}
+
+function parseAssistantPhotoContent(
+  content: unknown,
+  nowMs: number,
+): Record<string, unknown> {
+  if (typeof content !== 'string') throw new Error('resposta vazia')
+  const parsed = JSON.parse(content) as Record<string, unknown>
+  const intent = parsed?.intent
+  if (intent === 'meal') {
+    const raw = parsed.meal as Record<string, unknown> | undefined
+    const validTypes = new Set(['cafe', 'almoco', 'jantar', 'lanche'])
+    const items = Array.isArray(raw?.items)
+      ? raw.items.slice(0, 12).flatMap((value) => {
+          if (!value || typeof value !== 'object') return []
+          const item = value as Record<string, unknown>
+          const name = safePhotoLabel(item.name, 80)
+          const qty = safePhotoLabel(item.qty, 40)
+          const numbers = ['kcal', 'p', 'c', 'g'].map((key) => Number(item[key]))
+          if (
+            !name ||
+            !qty ||
+            numbers.some((number) => !Number.isFinite(number) || number < 0 || number > 10_000)
+          ) {
+            return []
+          }
+          return [{ name, qty, kcal: numbers[0], p: numbers[1], c: numbers[2], g: numbers[3] }]
+        })
+      : []
+    if (!raw || !validTypes.has(String(raw.type)) || items.length === 0) {
+      return { intent: 'unclear', message: 'Não consegui identificar uma refeição com dados suficientes.' }
+    }
+    return {
+      intent: 'meal',
+      meal: {
+        date: validLocalDate(raw.date) ? raw.date : formatSaoPauloDayKey(nowMs),
+        type: raw.type,
+        items,
+      },
+    }
+  }
+
+  if (intent === 'expense') {
+    const raw = parsed.expense as Record<string, unknown> | undefined
+    const amountCents = Number(raw?.amountCents)
+    const category = safePhotoLabel(raw?.category, 40)
+    const merchant = safePhotoLabel(raw?.merchant, 120)
+    if (!raw || !Number.isSafeInteger(amountCents) || amountCents <= 0 || amountCents > 500_000_000 || !category) {
+      return { intent: 'unclear', message: 'Não consegui identificar o valor ou a categoria do gasto.' }
+    }
+    return {
+      intent: 'expense',
+      expense: {
+        date: validLocalDate(raw.date) ? raw.date : formatSaoPauloDayKey(nowMs),
+        amountCents,
+        category,
+        ...(merchant ? { merchant } : {}),
+      },
+    }
+  }
+
+  if (intent === 'event') {
+    const raw = parsed.event as Record<string, unknown> | undefined
+    const title = safePhotoLabel(raw?.title, 120)
+    const startAt = typeof raw?.startAt === 'string' ? raw.startAt.trim() : ''
+    const hasOffset = /(?:Z|[+-]\d{2}:\d{2})$/i.test(startAt)
+    if (!raw || !title || !hasOffset || !Number.isFinite(Date.parse(startAt))) {
+      return { intent: 'unclear', message: 'Não consegui identificar título, data e horário do compromisso.' }
+    }
+    const endAt = typeof raw.endAt === 'string' ? raw.endAt.trim() : ''
+    const safeEndAt = endAt && /(?:Z|[+-]\d{2}:\d{2})$/i.test(endAt) && Number.isFinite(Date.parse(endAt))
+      ? endAt
+      : ''
+    const location = safePhotoLabel(raw.location, 120)
+    return {
+      intent: 'event',
+      event: { title, startAt, ...(safeEndAt ? { endAt: safeEndAt } : {}), ...(location ? { location } : {}) },
+    }
+  }
+
+  return {
+    intent: 'unclear',
+    message: 'Não consegui identificar dados suficientes para uma proposta. Revise a foto e tente novamente.',
+  }
+}
+
+async function analyzeAssistantPhoto(
+  imageDataUrl: string,
+  text: string,
+  groqApiKey: string,
+  env: Env,
+  fetcher: typeof fetch,
+  nowMs: number,
+): Promise<{ status: number; body: Record<string, unknown> }> {
+  const model = (env.GROQ_VISION_MODEL ?? DEFAULT_VISION_MODEL).trim() || DEFAULT_VISION_MODEL
+  let response: Response
+  try {
+    response = await fetcher(GROQ_CHAT_URL, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${groqApiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: `${ASSISTANT_PHOTO_PROMPT}\n\nTexto opcional do usuário: ${text || '(nenhum)'}` },
+              { type: 'image_url', image_url: { url: imageDataUrl } },
+            ],
+          },
+        ],
+        response_format: { type: 'json_object' },
+        reasoning_effort: 'none',
+        temperature: 0.1,
+        max_completion_tokens: 1400,
+      }),
+    })
+  } catch {
+    return { status: 502, body: { error: 'error: falha de comunicação com o provedor de IA.' } }
+  }
+  if (!response.ok) {
+    if (response.status === 429) {
+      return { status: 429, body: { error: 'error: limite de uso da API de IA atingido (429).' } }
+    }
+    if (response.status === 401 || response.status === 403) {
+      return { status: 502, body: { error: 'error: falha de autenticação do provedor de IA.' } }
+    }
+    return { status: 502, body: { error: `error: serviço de IA temporariamente indisponível (${response.status}).` } }
+  }
+  try {
+    const data = (await response.json()) as any
+    return { status: 200, body: parseAssistantPhotoContent(data?.choices?.[0]?.message?.content, nowMs) }
+  } catch {
+    return { status: 502, body: { error: 'error: a IA devolveu uma proposta inválida. Tente outra foto.' } }
+  }
+}
+
+function parseSuggestionContext(value: unknown, isOwner: boolean): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('Campo "context" inválido.')
+  }
+  const raw = value as Record<string, unknown>
+  const timeOfDay = ['manhã', 'tarde', 'noite'].includes(String(raw.timeOfDay)) ? raw.timeOfDay : 'dia'
+  const mealsLogged = Number(raw.mealsLogged)
+  if (typeof raw.workoutLogged !== 'boolean' || !Number.isInteger(mealsLogged) || mealsLogged < 0 || mealsLogged > 20) {
+    throw new Error('Contexto de sugestões inválido.')
+  }
+  const context: Record<string, unknown> = {
+    timeOfDay,
+    workoutLogged: raw.workoutLogged,
+    mealsLogged,
+  }
+  if (isOwner) {
+    if (raw.deadlineInDays === null || Number.isInteger(raw.deadlineInDays)) {
+      context.deadlineInDays = raw.deadlineInDays
+    }
+    const expenseEntries = Number(raw.expenseEntriesThisMonth)
+    if (Number.isInteger(expenseEntries) && expenseEntries >= 0 && expenseEntries <= 10_000) {
+      context.expenseEntriesThisMonth = expenseEntries
+    }
+  }
+  return context
+}
+
+async function generateAssistantSuggestions(
+  uid: string,
+  context: Record<string, unknown>,
+  groqApiKey: string,
+  env: Env,
+  fetcher: typeof fetch,
+  nowMs: number,
+): Promise<{ status: number; body: Record<string, unknown> }> {
+  const hour = Number(
+    new Intl.DateTimeFormat('en-US', { timeZone: 'America/Sao_Paulo', hour: '2-digit', hour12: false })
+      .format(new Date(nowMs))
+      .replace(/\D/g, ''),
+  )
+  const cacheKey = `${uid}:${formatSaoPauloDayKey(nowMs)}:${Math.floor((hour % 24) / 4)}`
+  const cached = memorySuggestionCache.get(cacheKey)
+  if (cached && cached.expiresAt > nowMs) return { status: 200, body: { suggestions: cached.suggestions } }
+
+  const model = (env.GROQ_MODEL ?? DEFAULT_MODEL).trim() || DEFAULT_MODEL
+  let response: Response
+  try {
+    response = await fetcher(GROQ_CHAT_URL, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${groqApiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model,
+        messages: [
+          {
+            role: 'user',
+            content: `Gere 3 sugestões curtas em português do Brasil para iniciar uma conversa útil no app de treino. Use somente este contexto agregado, não peça nem revele dados pessoais: ${JSON.stringify(context)}. Não invente registros. Responda JSON: {"suggestions":["...","...","..."]}.`,
+          },
+        ],
+        response_format: { type: 'json_object' },
+        temperature: 0.7,
+        max_completion_tokens: 300,
+      }),
+    })
+  } catch {
+    return { status: 502, body: { error: 'error: falha de comunicação com o provedor de IA.' } }
+  }
+  if (!response.ok) {
+    if (response.status === 429) return { status: 429, body: { error: 'error: limite de uso da API de IA atingido (429).' } }
+    return { status: 502, body: { error: `error: serviço de IA temporariamente indisponível (${response.status}).` } }
+  }
+  try {
+    const data = (await response.json()) as any
+    const content = data?.choices?.[0]?.message?.content
+    const parsed = typeof content === 'string' ? JSON.parse(content) : null
+    const suggestions = Array.isArray(parsed?.suggestions)
+      ? parsed.suggestions
+          .filter((item: unknown): item is string => typeof item === 'string')
+          .map((item: string) => item.trim().slice(0, 100))
+          .filter((item: string) => item.length > 0)
+          .slice(0, 4)
+      : []
+    if (suggestions.length < 2) throw new Error('sugestões insuficientes')
+    memorySuggestionCache.set(cacheKey, { expiresAt: nowMs + 15 * 60_000, suggestions })
+    return { status: 200, body: { suggestions } }
+  } catch {
+    return { status: 502, body: { error: 'error: a IA devolveu sugestões inválidas.' } }
+  }
+}
+
 // ---------- Foto da grade de aulas (/analyze-faculty-schedule) ----------
 
 export function parseFacultyScheduleContent(content: unknown): { aulas: unknown[] } {
@@ -1414,6 +1664,8 @@ export async function handleRequest(
 
   const isAnalyzeMeal = url.pathname === '/analyze-meal'
   const isAnalyzeFacultySchedule = url.pathname === '/analyze-faculty-schedule'
+  const isAnalyzeAssistantPhoto = url.pathname === '/analyze-assistant-photo'
+  const isSuggestions = url.pathname === '/suggestions'
   const isTranscribe = url.pathname === '/transcribe'
   const isIfesStatus = url.pathname === '/ifes/status'
   const isPushTest = url.pathname === '/push-test'
@@ -1421,6 +1673,8 @@ export async function handleRequest(
     url.pathname !== '/chat' &&
     !isAnalyzeMeal &&
     !isAnalyzeFacultySchedule &&
+    !isAnalyzeAssistantPhoto &&
+    !isSuggestions &&
     !isTranscribe &&
     !isIfesStatus &&
     !isPushTest
@@ -1547,7 +1801,7 @@ export async function handleRequest(
   }
 
   // Limite de 64 KB para o corpo do chat (a foto do prato tem um limite próprio, maior)
-  const isPhotoAnalysis = isAnalyzeMeal || isAnalyzeFacultySchedule
+  const isPhotoAnalysis = isAnalyzeMeal || isAnalyzeFacultySchedule || isAnalyzeAssistantPhoto
   const maxBodyBytes = isPhotoAnalysis ? MAX_IMAGE_BODY_BYTES : MAX_BODY_BYTES
   const tooLargeMsg = isPhotoAnalysis ? 'error: foto muito grande.' : 'error: corpo da requisição excede 64 KB.'
   const contentLength = request.headers.get('Content-Length')
@@ -1566,6 +1820,76 @@ export async function handleRequest(
     parsedBody = JSON.parse(text)
   } catch {
     return jsonResponse(400, { error: 'error: JSON inválido no corpo da requisição.' }, origin)
+  }
+
+  if (isAnalyzeAssistantPhoto) {
+    const body = parsedBody as Record<string, unknown> | null
+    const image = body && typeof body === 'object' && !Array.isArray(body) ? body.image : undefined
+    const text = body && typeof body === 'object' && !Array.isArray(body) ? body.text ?? '' : ''
+    const extra = body && typeof body === 'object' ? Object.keys(body).filter((key) => key !== 'image' && key !== 'text') : []
+    if (
+      typeof image !== 'string' ||
+      !MEAL_IMAGE_DATA_URL_RE.test(image) ||
+      typeof text !== 'string' ||
+      text.length > 500 ||
+      containsFinancialIdentifier(text) ||
+      extra.length > 0
+    ) {
+      return jsonResponse(
+        400,
+        { error: 'error: foto ou texto inválido; não envie números de cartão, CPF ou dados bancários.' },
+        origin,
+      )
+    }
+
+    let visionKey: string
+    try {
+      visionKey = resolveGroqApiKey(env)
+    } catch {
+      return jsonResponse(503, { error: 'chave do assistente não configurada' }, origin)
+    }
+    const photoQuota = await checkAndConsumeDailyQuota(jwtPayload.sub, 'photo', env, { fetcher, nowMs })
+    if (!photoQuota.allowed) {
+      return jsonResponse(
+        429,
+        { error: `error: limite diário de fotos atingido (${photoQuota.limit}/dia). Tente novamente amanhã.` },
+        origin,
+      )
+    }
+    const out = await analyzeAssistantPhoto(image, text.trim(), visionKey, env, fetcher, nowMs)
+    if (
+      out.status === 200 &&
+      !isOwnerUid(jwtPayload.sub, env) &&
+      (out.body.intent === 'expense' || out.body.intent === 'event')
+    ) {
+      return jsonResponse(
+        403,
+        { error: 'error: propostas de Gastos e Agenda estão disponíveis apenas para o proprietário.' },
+        origin,
+      )
+    }
+    return jsonResponse(out.status, out.body, origin)
+  }
+
+  if (isSuggestions) {
+    const body = parsedBody as Record<string, unknown> | null
+    if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some((key) => key !== 'context')) {
+      return jsonResponse(400, { error: 'error: envie somente o campo "context".' }, origin)
+    }
+    let context: Record<string, unknown>
+    try {
+      context = parseSuggestionContext(body.context, isOwnerUid(jwtPayload.sub, env))
+    } catch (error) {
+      return jsonResponse(400, { error: `error: ${(error as Error).message}` }, origin)
+    }
+    let groqApiKey: string
+    try {
+      groqApiKey = resolveGroqApiKey(env)
+    } catch {
+      return jsonResponse(503, { error: 'chave do assistente não configurada' }, origin)
+    }
+    const out = await generateAssistantSuggestions(jwtPayload.sub, context, groqApiKey, env, fetcher, nowMs)
+    return jsonResponse(out.status, out.body, origin)
   }
 
   if (isAnalyzeMeal) {

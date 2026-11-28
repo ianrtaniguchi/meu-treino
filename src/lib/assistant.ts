@@ -163,7 +163,18 @@ export interface ExpenseDraft {
   merchantNote?: string
 }
 
-export type AssistantDraft = MealDraft | RoutineDraft | BodyDraft | ExpenseDraft
+export interface EventDraft {
+  id: string
+  kind: 'event'
+  status: 'pending' | 'confirmed' | 'discarded'
+  title: string
+  startAt: string
+  endAt?: string
+  location?: string
+  description?: string
+}
+
+export type AssistantDraft = MealDraft | RoutineDraft | BodyDraft | ExpenseDraft | EventDraft
 
 export interface CalendarEventInfo {
   id: string
@@ -735,6 +746,28 @@ export function validateDraft(draft: AssistantDraft): void {
     return
   }
 
+  if (draft.kind === 'event') {
+    if (!isCurrentUserOwner()) {
+      throw new Error('A criação de eventos pela foto é restrita ao proprietário.')
+    }
+    if (
+      typeof draft.title !== 'string' ||
+      !draft.title.trim() ||
+      draft.title.length > 120 ||
+      containsFinancialIdentifier(draft.title) ||
+      !Number.isFinite(Date.parse(draft.startAt)) ||
+      !/(?:Z|[+-]\d{2}:\d{2})$/i.test(draft.startAt)
+    ) {
+      throw new Error('Título, data e horário do evento são obrigatórios.')
+    }
+    for (const value of [draft.endAt, draft.location, draft.description]) {
+      if (value && (value.length > 240 || containsFinancialIdentifier(value))) {
+        throw new Error('Os detalhes do evento são inválidos ou contêm dados financeiros.')
+      }
+    }
+    return
+  }
+
   throw new Error('Tipo de rascunho desconhecido.')
 }
 
@@ -743,6 +776,35 @@ export function validateDraft(draft: AssistantDraft): void {
  */
 export async function applyConfirmedDraft(draft: AssistantDraft): Promise<string[]> {
   validateDraft(draft)
+
+  if (draft.kind === 'event') {
+    const token = await defaultGetIdToken()
+    if (!token) throw new Error('Entre na sua conta para criar o evento na agenda.')
+    const response = await fetch(`${ASSISTANT_WORKER_URL.replace(/\/+$/, '')}/chat`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        calendar_action: {
+          tool: 'criar_evento',
+          args: {
+            titulo: draft.title.trim(),
+            inicio: draft.startAt,
+            ...(draft.endAt ? { fim: draft.endAt } : {}),
+            ...(draft.location ? { local: draft.location } : {}),
+            ...(draft.description ? { descricao: draft.description } : {}),
+          },
+        },
+      }),
+    })
+    const payload = (await response.json()) as { error?: string; event?: unknown }
+    if (!response.ok || payload.error || !payload.event) {
+      throw new Error(payload.error || `Falha ao criar evento na agenda (HTTP ${response.status}).`)
+    }
+    return []
+  }
 
   if (draft.kind === 'meal') {
     const existing = (await db.meals.where('date').equals(draft.date).toArray()).find(

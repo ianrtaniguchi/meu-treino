@@ -22,6 +22,8 @@ const P: Record<string, ReactNode> = {
   ),
   config: <path d="M4 7h9M17 7h3M4 17h3M11 17h9M15 5v4M9 15v4" />,
   hoje: <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />,
+  image: <path d="M4 5h16v14H4zM4 15l4-4 4 4 3-3 5 5M15.5 9h.01" />,
+  camera: <path d="M4 7h3l1.5-2h7L17 7h3v12H4zM12 10a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7z" />,
 }
 
 export type IconName =
@@ -35,6 +37,8 @@ export type IconName =
   | 'gastos'
   | 'config'
   | 'hoje'
+  | 'image'
+  | 'camera'
 
 export default function Icon({ name }: { name: IconName }) {
   return (

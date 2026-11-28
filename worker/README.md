@@ -25,6 +25,12 @@ Este Cloudflare Worker atua como um proxy autenticado entre o PWA **Meu Treino**
    - Aceita apenas `POST /chat` com corpo JSON de até **64 KB**, somente com os campos `messages`, `tools`, `tool_choice`, `temperature`, `max_tokens` (teto `1024`) e `stream`. O cliente não pode escolher o modelo (`model` no corpo retorna `400`).
    - Rate limiting por UID (`RATE_LIMIT_PER_MIN`, padrão `20 req/min`).
 
+## Fotos e sugestões contextuais do Assistente
+
+- `POST /analyze-assistant-photo` recebe `{ "image": "data:image/jpeg;base64,...", "text": "..." }`, exige Firebase ID Token e aplica a cota diária já usada pelas análises de foto (30 para o proprietário e 10 para contas secundárias). A resposta contém somente uma proposta validada de refeição, gasto, evento ou uma indicação de que a imagem não pôde ser interpretada; o app só grava a proposta depois da confirmação explícita. Gastos e Agenda são restritos ao `OWNER_UID`. Imagens não são armazenadas pelo Worker nem adicionadas ao histórico local. Para recibos, nunca envie números de cartão, CPF ou dados bancários no texto opcional; a resposta exclui OCR bruto e campos identificadores.
+- `POST /suggestions` recebe contexto agregado do dia (`timeOfDay`, `workoutLogged` e `mealsLogged`), mais contagens de prazos/gastos somente para o proprietário. O Worker valida e limita esses campos e mantém sugestões em cache curto por UID e horário; não envie nomes, notas, valores de compra ou outros dados pessoais.
+- As duas rotas seguem a autenticação, allowlist de UIDs e CORS configurados acima. Após alterações nessas rotas, publique o Worker a partir desta pasta com `npm run deploy`.
+
 ## Passo a Passo de Configuração e Deploy
 
 ### 1. Cadastrar ou trocar a chave `groqApiKey` no Firestore
