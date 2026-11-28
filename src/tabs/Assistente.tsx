@@ -1,6 +1,6 @@
 import { useLiveQuery } from 'dexie-react-hooks'
-import { useEffect, useRef, useState } from 'react'
-import { PromptTitle } from '../components/TerminalChrome'
+import { useContext, useEffect, useRef, useState } from 'react'
+import { ChromeNavContext, PromptTitle } from '../components/TerminalChrome'
 import { useUi } from '../components/ui'
 import { dayTotals } from '../data/stats'
 import { useSyncStatus } from '../hooks'
@@ -38,6 +38,7 @@ const QUICK_PROMPTS = [
 
 export default function Assistente() {
   const { toast, confirm } = useUi()
+  const { onNavigateTab } = useContext(ChromeNavContext)
   const syncStatus = useSyncStatus()
   const activeUid = syncStatus.user?.uid ?? null
   const history = useLiveQuery(
@@ -175,7 +176,17 @@ export default function Assistente() {
         }
       })
       await saveAssistantHistory(updated)
-      toast('Rascunho confirmado e salvo')
+      const targetTab =
+        draft.kind === 'meal' ? 'dieta' : draft.kind === 'body' ? 'corpo' : 'treino'
+      toast(
+        'Rascunho confirmado e salvo',
+        onNavigateTab
+          ? {
+              label: 'abrir',
+              run: () => onNavigateTab(targetTab),
+            }
+          : undefined,
+      )
     } catch (e) {
       toast((e as Error).message || 'Falha ao validar rascunho')
     }
@@ -373,6 +384,14 @@ export default function Assistente() {
                     draft={d}
                     onConfirm={() => void handleConfirmDraft(m.id, d)}
                     onDiscard={() => void handleDiscardDraft(m.id, d.id)}
+                    onOpenSection={
+                      onNavigateTab
+                        ? () =>
+                            onNavigateTab(
+                              d.kind === 'meal' ? 'dieta' : d.kind === 'body' ? 'corpo' : 'treino',
+                            )
+                        : undefined
+                    }
                   />
                 ))}
 
@@ -499,12 +518,21 @@ function DraftCard({
   draft,
   onConfirm,
   onDiscard,
+  onOpenSection,
 }: {
   draft: AssistantDraft
   onConfirm: () => void
   onDiscard: () => void
+  onOpenSection?: () => void
 }) {
   const isPending = draft.status === 'pending'
+  const isConfirmed = draft.status === 'confirmed'
+  const sectionLabel =
+    draft.kind === 'meal'
+      ? 'Treino › Dieta'
+      : draft.kind === 'body'
+        ? 'Treino › Corpo'
+        : 'Treino › Rotinas'
 
   return (
     <div
@@ -595,6 +623,11 @@ function DraftCard({
             descartar
           </button>
         </div>
+      )}
+      {isConfirmed && onOpenSection && (
+        <button className="small" onClick={onOpenSection}>
+          abrir em {sectionLabel}
+        </button>
       )}
     </div>
   )

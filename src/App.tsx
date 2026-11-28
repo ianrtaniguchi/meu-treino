@@ -31,6 +31,7 @@ import {
   PromptTitle,
   recordSplashShown,
   shouldShowSplashOnColdStart,
+  type FitnessSection,
 } from './components/TerminalChrome'
 import { useUi } from './components/ui'
 import {
@@ -59,13 +60,44 @@ const NAV_SLOTS: Array<{ tab: Tab; left: number; width: number }> = [
   { tab: 'config', left: 0.8, width: 0.2 },
 ]
 const TAB_LABELS: Record<Tab, string> = {
-  treino: 'Treino (~/treino)',
+  treino: 'Treino, Dieta e Corpo (~/treino)',
   dieta: 'Dieta (~/dieta)',
   corpo: 'Corpo (~/corpo)',
   assistente: 'Agente IA (~/assistente)',
   noticias: 'Notícias do Ifes (~/noticias)',
   onibus: 'Ônibus Transcol / Ceturb-ES (~/onibus)',
   config: 'Configurações (~/config)',
+}
+const FITNESS_SECTION_STORAGE_KEY = 'meu_treino_fitness_section'
+
+function getSavedFitnessSection(): FitnessSection {
+  try {
+    if (typeof window !== 'undefined') {
+      const param = new URLSearchParams(window.location.search).get('tab')
+      if (param === 'dieta' || param === 'corpo' || param === 'treino') {
+        return param
+      }
+    }
+    if (typeof localStorage !== 'undefined') {
+      const saved = localStorage.getItem(FITNESS_SECTION_STORAGE_KEY)
+      if (saved === 'treino' || saved === 'dieta' || saved === 'corpo') {
+        return saved
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return 'treino'
+}
+
+function persistFitnessSection(section: FitnessSection): void {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(FITNESS_SECTION_STORAGE_KEY, section)
+    }
+  } catch {
+    // ignore
+  }
 }
 const WEEK = 7 * 24 * 3600 * 1000
 const SPLASH_HOLD_MS = 1950
@@ -78,12 +110,18 @@ export default function App() {
   const [tab, setTab] = useState<Tab>(() => {
     if (typeof window !== 'undefined') {
       const param = new URLSearchParams(window.location.search).get('tab')
+      if (param === 'dieta' || param === 'corpo') {
+        return 'treino'
+      }
       if (param && (ALL_TABS as string[]).includes(param)) {
         return param as Tab
       }
     }
     return 'treino'
   })
+  const [fitnessSection, setFitnessSection] = useState<FitnessSection>(() =>
+    getSavedFitnessSection(),
+  )
   const [lastNonConfigTab, setLastNonConfigTab] = useState<Tab>('treino')
   const [bootVisible, setBootVisible] = useState<boolean>(() => {
     const show = shouldShowSplashOnColdStart(Date.now())
@@ -133,7 +171,18 @@ export default function App() {
     hiddenAt: null,
   })
 
+  const selectFitnessSection = (section: FitnessSection) => {
+    setFitnessSection(section)
+    persistFitnessSection(section)
+    setLastNonConfigTab('treino')
+    setTab('treino')
+  }
+
   const selectTab = (next: Tab) => {
+    if (next === 'dieta' || next === 'corpo') {
+      selectFitnessSection(next)
+      return
+    }
     if (next !== 'config') {
       setLastNonConfigTab(next)
     }
@@ -380,6 +429,9 @@ export default function App() {
         isConfigActive: tab === 'config',
         hasConfigAlert: stale,
         onToggleConfig: toggleConfigTab,
+        fitnessSection,
+        onSelectFitnessSection: selectFitnessSection,
+        onNavigateTab: selectTab,
       }}
     >
       <div className="app">
@@ -404,8 +456,10 @@ export default function App() {
               {lastBackup ? `Backup há ${days}d` : 'Sem backup exportado'} · exportar agora
             </div>
           )}
-          <div key={tab} className="tab-view-enter">
-            {tab === 'treino' && <Treino />}
+          <div key={tab === 'treino' ? `treino-${fitnessSection}` : tab} className="tab-view-enter">
+            {tab === 'treino' && fitnessSection === 'treino' && <Treino />}
+            {tab === 'treino' && fitnessSection === 'dieta' && <Dieta />}
+            {tab === 'treino' && fitnessSection === 'corpo' && <Corpo />}
             {tab === 'dieta' && <Dieta />}
             {tab === 'corpo' && <Corpo />}
             {tab === 'assistente' && <Assistente />}

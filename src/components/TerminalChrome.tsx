@@ -1,5 +1,5 @@
 import { useLiveQuery } from 'dexie-react-hooks'
-import { createContext, useEffect, useState, type ReactNode } from 'react'
+import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
 import { DB_VERSION, db } from '../data/db'
 import { useSyncStatus } from '../hooks'
 import {
@@ -10,10 +10,15 @@ import {
   type LockConfig,
 } from '../lib/lock'
 
+export type FitnessSection = 'treino' | 'dieta' | 'corpo'
+
 export interface ChromeNavContextValue {
   isConfigActive: boolean
   hasConfigAlert?: boolean
   onToggleConfig?: () => void
+  fitnessSection?: FitnessSection
+  onSelectFitnessSection?: (section: FitnessSection) => void
+  onNavigateTab?: (tab: 'treino' | 'dieta' | 'corpo' | 'assistente' | 'noticias' | 'onibus' | 'config') => void
 }
 
 export const ChromeNavContext = createContext<ChromeNavContextValue>({
@@ -170,10 +175,16 @@ export function Statusline() {
   )
 }
 
+const FITNESS_SECTIONS: Array<{ key: FitnessSection; label: string }> = [
+  { key: 'treino', label: 'Treino' },
+  { key: 'dieta', label: 'Dieta' },
+  { key: 'corpo', label: 'Corpo' },
+]
+
 /**
  * Cabeçalho editorial da página:
  * Caminho `~/aba` discreto em fonte pequena acima do título direto em serifa (`Newsreader`),
- * com efeito Liquid Glass reduzido ao rolar.
+ * com seletor segmentado `Treino | Dieta | Corpo` integrado quando na aba unificada de Treino.
  */
 export function PromptTitle({
   path,
@@ -184,15 +195,42 @@ export function PromptTitle({
   title?: string
   rightSlot?: ReactNode
 }) {
+  const { fitnessSection, onSelectFitnessSection } = useContext(ChromeNavContext)
   const resolvedTitle = title ?? PATH_TITLES[path] ?? path.replace(/^~\//, '')
+  const isFitnessGroup =
+    (path === '~/treino' || path === '~/dieta' || path === '~/corpo') &&
+    Boolean(onSelectFitnessSection)
+  const activeSection: FitnessSection =
+    fitnessSection ?? (path === '~/dieta' ? 'dieta' : path === '~/corpo' ? 'corpo' : 'treino')
 
   return (
     <header className="prompt-header-bar">
-      <div className="prompt-heading-group">
-        <span className="prompt-path">{path}</span>
-        <h1 className="prompt-title">{resolvedTitle}</h1>
+      <div className="prompt-header-top">
+        <div className="prompt-heading-group">
+          <span className="prompt-path">{path}</span>
+          <h1 className="prompt-title">{resolvedTitle}</h1>
+        </div>
+        {rightSlot ? <div className="prompt-header-actions">{rightSlot}</div> : null}
       </div>
-      {rightSlot ? <div className="prompt-header-actions">{rightSlot}</div> : null}
+      {isFitnessGroup && onSelectFitnessSection && (
+        <div className="fitness-seg" role="tablist" aria-label="Seção de Treino, Dieta e Corpo">
+          {FITNESS_SECTIONS.map((sec) => {
+            const on = activeSection === sec.key
+            return (
+              <button
+                key={sec.key}
+                type="button"
+                role="tab"
+                aria-selected={on}
+                className={on ? 'on' : ''}
+                onClick={() => onSelectFitnessSection(sec.key)}
+              >
+                {sec.label}
+              </button>
+            )
+          })}
+        </div>
+      )}
     </header>
   )
 }
