@@ -61,6 +61,7 @@ export default function Faculdade() {
   const data = useSetting<FacultyData>(FACULDADE_SETTING_KEY, EMPTY_FACULTY_DATA) ?? EMPTY_FACULTY_DATA
   const { toast } = useUi()
   const photoInput = useRef<HTMLInputElement>(null)
+  const cameraInput = useRef<HTMLInputElement>(null)
   const [editor, setEditor] = useState<Editor | null>(null)
   const [editorError, setEditorError] = useState('')
   const [photoBusy, setPhotoBusy] = useState(false)
@@ -320,6 +321,7 @@ export default function Faculdade() {
     } finally {
       setPhotoBusy(false)
       if (photoInput.current) photoInput.current.value = ''
+      if (cameraInput.current) cameraInput.current.value = ''
     }
   }
 
@@ -391,7 +393,10 @@ export default function Faculdade() {
           <b>Horário das aulas</b>
           <div className="faculty-actions">
             <button type="button" className="small" style={{ minHeight: 44 }} disabled={photoBusy} onClick={() => photoInput.current?.click()}>
-              {photoBusy ? 'lendo foto…' : 'cadastrar por foto'}
+              galeria / arquivo
+            </button>
+            <button type="button" className="small" style={{ minHeight: 44 }} disabled={photoBusy} onClick={() => cameraInput.current?.click()}>
+              câmera
             </button>
             <button type="button" className="small" style={{ minHeight: 44 }} onClick={() => openClassEditor()}>
               + aula
@@ -400,6 +405,14 @@ export default function Faculdade() {
         </div>
         <input
           ref={photoInput}
+          type="file"
+          accept="image/*"
+          hidden
+          style={{ display: 'none' }}
+          onChange={(event) => void onPhoto(event.target.files?.[0])}
+        />
+        <input
+          ref={cameraInput}
           type="file"
           accept="image/*"
           capture="environment"

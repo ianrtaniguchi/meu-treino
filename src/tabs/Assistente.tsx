@@ -1,5 +1,7 @@
 import { useLiveQuery } from 'dexie-react-hooks'
 import { useContext, useEffect, useRef, useState } from 'react'
+import { OWNER_UID } from '../assistantConfig'
+import { uid } from '../data/db'
 import { ChromeNavContext, PromptTitle } from '../components/TerminalChrome'
 import { useUi } from '../components/ui'
 import { dayTotals } from '../data/stats'
@@ -16,8 +18,13 @@ import {
   type AssistantDraft,
   type CalendarCardItem,
   type ChatTurnMessage,
+  type EventDraft,
+  type ExpenseDraft,
+  type MealDraft,
   type PushReminderCardItem,
 } from '../lib/assistant'
+import { analyzeAssistantPhoto, fetchAssistantSuggestions } from '../lib/assistantMedia'
+import Icon from '../components/Icons'
 import {
   startAudioRecording,
   transcribeAudioClip,
@@ -51,12 +58,18 @@ export default function Assistente() {
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
+  const [suggestions, setSuggestions] = useState<string[]>(QUICK_PROMPTS)
+  const [suggestionError, setSuggestionError] = useState('')
+  const [selectedPhoto, setSelectedPhoto] = useState<File | null>(null)
+  const [photoPreview, setPhotoPreview] = useState<string | null>(null)
   const [online, setOnline] = useState<boolean>(
     typeof navigator !== 'undefined' ? navigator.onLine !== false : true,
   )
   const [voiceState, setVoiceState] = useState<'idle' | 'recording' | 'transcribing'>('idle')
   const [recordSec, setRecordSec] = useState(0)
   const recorderRef = useRef<ActiveAudioRecorder | null>(null)
+  const galleryInputRef = useRef<HTMLInputElement | null>(null)
+  const cameraInputRef = useRef<HTMLInputElement | null>(null)
   const chatBottomRef = useRef<HTMLDivElement | null>(null)
   const didInitialScrollRef = useRef<boolean>(false)
 
@@ -121,6 +134,119 @@ export default function Assistente() {
 
   const canUse = Boolean(syncStatus.user && online)
 
+  useEffect(() => {
+    if (!photoPreview) return
+    return () => URL.revokeObjectURL(photoPreview)
+  }, [photoPreview])
+
+  useEffect(() => {
+    if (!activeUid || !canUse) {
+      setSuggestions(QUICK_PROMPTS)
+      setSuggestionError('')
+      return
+    }
+    let active = true
+    setSuggestionError('')
+    void fetchAssistantSuggestions(activeUid)
+      .then((items) => {
+        if (active) setSuggestions(items)
+      })
+      .catch((error: unknown) => {
+        if (!active) return
+        setSuggestions(QUICK_PROMPTS)
+        setSuggestionError(error instanceof Error ? error.message : 'Sugestões locais enquanto a IA está indisponível.')
+      })
+    return () => {
+      active = false
+    }
+  }, [activeUid, canUse])
+
+  const handlePhotoSelection = (file?: File) => {
+    if (!file) return
+    setSelectedPhoto(file)
+    setPhotoPreview(URL.createObjectURL(file))
+    setErr('')
+    if (galleryInputRef.current) galleryInputRef.current.value = ''
+    if (cameraInputRef.current) cameraInputRef.current.value = ''
+  }
+
+  const handleSendPhoto = async () => {
+    if (!selectedPhoto || !canUse || busy || !activeUid) return
+    const text = input.trim()
+    if (containsFinancialIdentifier(text)) {
+      setErr('error: não envie números de cartão, banco ou conta ao assistente.')
+      return
+    }
+    setErr('')
+    setBusy(true)
+    try {
+      const analysis = await analyzeAssistantPhoto(selectedPhoto, text)
+      let draft: MealDraft | ExpenseDraft | EventDraft | null = null
+      let replyText = analysis.message || 'Não consegui identificar dados suficientes para uma proposta.'
+
+      if (analysis.intent === 'meal' && analysis.meal) {
+        draft = {
+          id: uid(),
+          kind: 'meal',
+          status: 'pending',
+          date: analysis.meal.date,
+          mealType: analysis.meal.type,
+          items: analysis.meal.items,
+        }
+        replyText = 'Identifiquei uma refeição. Confira os alimentos e confirme para registrar.'
+      } else if (analysis.intent === 'expense' && analysis.expense) {
+        if (activeUid !== OWNER_UID) throw new Error('Propostas de Gastos estão disponíveis apenas para o proprietário.')
+        draft = {
+          id: uid(),
+          kind: 'expense',
+          status: 'pending',
+          date: analysis.expense.date,
+          amountCents: analysis.expense.amountCents,
+          category: analysis.expense.category,
+          merchantNote: analysis.expense.merchant,
+        }
+        replyText = 'Li os dados essenciais do comprovante. Confira e confirme para salvar; a imagem não fica no histórico.'
+      } else if (analysis.intent === 'event' && analysis.event) {
+        if (activeUid !== OWNER_UID) throw new Error('Propostas de Agenda estão disponíveis apenas para o proprietário.')
+        draft = {
+          id: uid(),
+          kind: 'event',
+          status: 'pending',
+          title: analysis.event.title,
+          startAt: analysis.event.startAt,
+          endAt: analysis.event.endAt,
+          location: analysis.event.location,
+          description: analysis.event.description,
+        }
+        replyText = 'Identifiquei um compromisso. Revise os detalhes e confirme para criar o evento na agenda.'
+      }
+
+      const userMessage: ChatTurnMessage = {
+        id: `u-${Date.now()}`,
+        role: 'user',
+        content: text || 'Foto enviada para análise.',
+        createdAt: Date.now(),
+      }
+      const assistantMessage: ChatTurnMessage = {
+        id: uid(),
+        role: 'assistant',
+        content: replyText,
+        createdAt: Date.now(),
+        dataSent: ['foto processada temporariamente no Worker'],
+        drafts: draft ? [draft] : undefined,
+      }
+      await saveAssistantHistory([...history, userMessage, assistantMessage], activeUid)
+      setInput('')
+      setSelectedPhoto(null)
+      setPhotoPreview(null)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Falha ao analisar a foto.'
+      setErr(message.startsWith('error:') ? message : `error: ${message}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const handleSend = async (promptText?: string) => {
     const text = (promptText ?? input).trim()
     if (!text || busy) return
@@ -183,7 +309,9 @@ export default function Assistente() {
       })
       await saveAssistantHistory(updated)
       const targetTab =
-        draft.kind === 'expense'
+        draft.kind === 'event'
+          ? 'assistente'
+          : draft.kind === 'expense'
           ? 'gastos'
           : draft.kind === 'meal'
             ? 'dieta'
@@ -346,9 +474,10 @@ export default function Assistente() {
         </div>
       )}
 
-      <div className="card">
+      <div className="card assistant-suggestions">
+        <div className="muted small">Sugestões para começar</div>
         <div className="chips">
-          {QUICK_PROMPTS.map((q) => (
+          {suggestions.map((q) => (
             <button
               key={q}
               className="small ai"
@@ -359,6 +488,7 @@ export default function Assistente() {
             </button>
           ))}
         </div>
+        {suggestionError && <div className="muted small">{suggestionError} · atalhos locais disponíveis.</div>}
       </div>
 
       {history.length === 0 ? (
@@ -400,7 +530,9 @@ export default function Assistente() {
                       onNavigateTab
                         ? () =>
                             onNavigateTab(
-                              d.kind === 'expense'
+                              d.kind === 'event'
+                                ? 'assistente'
+                                : d.kind === 'expense'
                                 ? 'gastos'
                                 : d.kind === 'meal'
                                   ? 'dieta'
@@ -455,6 +587,54 @@ export default function Assistente() {
       )}
 
       <div className="card stack" style={{ marginTop: 10 }}>
+        <input
+          ref={galleryInputRef}
+          type="file"
+          accept="image/*"
+          hidden
+          onChange={(event) => handlePhotoSelection(event.target.files?.[0])}
+        />
+        <input
+          ref={cameraInputRef}
+          type="file"
+          accept="image/*"
+          capture="environment"
+          hidden
+          onChange={(event) => handlePhotoSelection(event.target.files?.[0])}
+        />
+        {selectedPhoto && photoPreview && (
+          <div className="assistant-photo-preview">
+            <img src={photoPreview} alt="Prévia da foto anexada" />
+            <div className="stack grow" style={{ gap: 6 }}>
+              <b className="small">Foto pronta para analisar</b>
+              <span className="muted small">A imagem é processada temporariamente e não é salva no histórico.</span>
+              <div className="row">
+                <button
+                  type="button"
+                  className="primary small"
+                  style={{ minHeight: 44 }}
+                  disabled={!canUse || busy}
+                  onClick={() => void handleSendPhoto()}
+                >
+                  {busy ? 'analisando…' : 'analisar foto'}
+                </button>
+                <button
+                  type="button"
+                  className="small ghost"
+                  style={{ minHeight: 44 }}
+                  disabled={busy}
+                  onClick={() => {
+                    setSelectedPhoto(null)
+                    setPhotoPreview(null)
+                  }}
+                  aria-label="Remover foto anexada"
+                >
+                  remover
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
         <textarea
           rows={2}
           value={input}
@@ -526,6 +706,30 @@ export default function Assistente() {
             </button>
           </div>
         )}
+        {voiceState === 'idle' && (
+          <div className="row assistant-media-actions">
+            <button
+              type="button"
+              className="small ghost"
+              style={{ minHeight: 44 }}
+              disabled={!canUse || busy}
+              onClick={() => galleryInputRef.current?.click()}
+            >
+              <span className="assistant-media-icon"><Icon name="image" /></span>
+              galeria
+            </button>
+            <button
+              type="button"
+              className="small ghost"
+              style={{ minHeight: 44 }}
+              disabled={!canUse || busy}
+              onClick={() => cameraInputRef.current?.click()}
+            >
+              <span className="assistant-media-icon"><Icon name="camera" /></span>
+              câmera
+            </button>
+          </div>
+        )}
       </div>
       <div ref={chatBottomRef} aria-hidden="true" style={{ height: 2 }} />
     </>
@@ -546,7 +750,9 @@ function DraftCard({
   const isPending = draft.status === 'pending'
   const isConfirmed = draft.status === 'confirmed'
   const sectionLabel =
-    draft.kind === 'expense'
+    draft.kind === 'event'
+      ? 'Assistente › Agenda'
+      : draft.kind === 'expense'
       ? 'Hoje › Gastos'
       : draft.kind === 'meal'
       ? 'Treino › Dieta'
@@ -569,7 +775,7 @@ function DraftCard({
     >
       <div className="row between">
         <b className="small amber">
-          [rascunho: {draft.kind === 'expense' ? 'gasto' : draft.kind === 'meal' ? 'refeição' : draft.kind === 'routine' ? 'rotina' : 'peso / medidas'}]
+          [rascunho: {draft.kind === 'event' ? 'evento' : draft.kind === 'expense' ? 'gasto' : draft.kind === 'meal' ? 'refeição' : draft.kind === 'routine' ? 'rotina' : 'peso / medidas'}]
         </b>
         <span className="chip">
           {draft.status === 'pending'
@@ -643,12 +849,28 @@ function DraftCard({
         </div>
       )}
 
+      {draft.kind === 'event' && (
+        <div className="stack small">
+          <div>evento: <b>{draft.title}</b></div>
+          <div>
+            início: <b>{fmtCalendarDateTime(draft.startAt).date} · {fmtCalendarDateTime(draft.startAt).time}</b>
+          </div>
+          {draft.endAt && (
+            <div>
+              fim: <b>{fmtCalendarDateTime(draft.endAt).date} · {fmtCalendarDateTime(draft.endAt).time}</b>
+            </div>
+          )}
+          {draft.location && <div className="muted">local: {draft.location}</div>}
+          {draft.description && <div className="muted">{draft.description}</div>}
+        </div>
+      )}
+
       {isPending && (
         <div className="grid2">
-          <button className="primary small" onClick={onConfirm}>
-            confirmar e salvar
+          <button className="primary small" onClick={onConfirm} style={{ minHeight: 44 }}>
+            {draft.kind === 'event' ? 'confirmar e criar evento' : 'confirmar e salvar'}
           </button>
-          <button className="small" onClick={onDiscard}>
+          <button className="small" onClick={onDiscard} style={{ minHeight: 44 }}>
             descartar
           </button>
         </div>

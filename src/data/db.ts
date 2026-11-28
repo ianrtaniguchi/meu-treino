@@ -16,7 +16,12 @@ export const SYNCABLE_SETTINGS = new Set([
   'todayModulesConfig',
   'faculdadeData',
   'expenseCategories',
+  'mainNavTabs',
 ])
+
+export function isSyncableSettingKey(key: string): boolean {
+  return SYNCABLE_SETTINGS.has(key) || key.startsWith('mainNavTabs:')
+}
 
 export const pkOf = (table: TableName) => (table === 'settings' ? 'key' : 'id')
 export const recordDocId = (table: TableName, pk: string) => `${table}:${pk}`
@@ -241,7 +246,7 @@ export class AppDB extends Dexie {
             const tName = tableName as TableName
             const pkField = pkOf(tName)
             const shouldQueue = (pk: string, val?: any) => {
-              if (tName === 'settings') return SYNCABLE_SETTINGS.has(pk)
+              if (tName === 'settings') return isSyncableSettingKey(pk)
               // exercícios e alimentos builtin não editados na seed inicial não precisam ir para a fila até que sejam alterados/usados,
               // a menos que não sejam builtin ou já estejam sendo editados.
               if ((tName === 'exercises' || tName === 'foods') && val?.builtin && val?._seedInit) return false

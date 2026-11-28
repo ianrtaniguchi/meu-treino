@@ -1,4 +1,6 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import L from 'leaflet'
+import 'leaflet/dist/leaflet.css'
 import {
   filterLines,
   getFavoriteStopIds,
@@ -29,6 +31,8 @@ interface Stop {
   name: string
   address: string
   reference: string
+  latitude?: number
+  longitude?: number
 }
 
 function isRecord(value: GeocontrolJson): value is Record<string, GeocontrolJson> {
@@ -80,6 +84,10 @@ function toStop(record: Record<string, GeocontrolJson>): Stop | null {
   ])
   const id = Number(idText)
   if (!Number.isSafeInteger(id) || id <= 0) return null
+  const latitudeText = fieldValue(record, ['latitude', 'lat', 'y']).replace(',', '.')
+  const longitudeText = fieldValue(record, ['longitude', 'lon', 'lng', 'long', 'x']).replace(',', '.')
+  const latitude = latitudeText ? Number(latitudeText) : Number.NaN
+  const longitude = longitudeText ? Number(longitudeText) : Number.NaN
   return {
     id,
     name:
@@ -87,6 +95,8 @@ function toStop(record: Record<string, GeocontrolJson>): Stop | null {
       `Ponto ${id}`,
     address: fieldValue(record, ['endereco', 'logradouro', 'rua', 'localizacao']),
     reference: fieldValue(record, ['referencia', 'pontoReferencia', 'complemento', 'bairro']),
+    ...(Number.isFinite(latitude) && Math.abs(latitude) <= 90 ? { latitude } : {}),
+    ...(Number.isFinite(longitude) && Math.abs(longitude) <= 180 ? { longitude } : {}),
   }
 }
 
@@ -133,6 +143,146 @@ function StarIcon({ active }: { active: boolean }) {
   )
 }
 
+function BusStopsMap({
+  stops,
+  onSelectStop,
+}: {
+  stops: Stop[]
+  onSelectStop: (stop: Stop) => void
+}) {
+  const containerRef = useRef<HTMLDivElement | null>(null)
+  const mapRef = useRef<L.Map | null>(null)
+  const markerLayerRef = useRef<L.LayerGroup | null>(null)
+  const [locating, setLocating] = useState(false)
+  const [mapError, setMapError] = useState('')
+  const [userLocation, setUserLocation] = useState<[number, number] | null>(null)
+  const locatedStops = useMemo(() => {
+    if (!userLocation) return stops
+    return stops.filter((stop) => {
+      if (stop.latitude === undefined || stop.longitude === undefined) return false
+      return L.latLng(userLocation).distanceTo([stop.latitude, stop.longitude]) <= 8000
+    })
+  }, [stops, userLocation])
+
+  useEffect(() => {
+    const node = containerRef.current
+    if (!node) return
+    const map = L.map(node, {
+      center: [-20.3155, -40.3128],
+      zoom: 12,
+      scrollWheelZoom: false,
+    })
+    const tileStyle = () => document.documentElement.getAttribute('data-theme') === 'dark'
+      ? 'dark_all'
+      : 'light_all'
+    const tileUrl = () => `https://{s}.basemaps.cartocdn.com/${tileStyle()}/{z}/{x}/{y}{r}.png`
+    const tileLayer = L.tileLayer(tileUrl(), {
+      attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
+      subdomains: 'abcd',
+      maxZoom: 20,
+    }).addTo(map)
+    const updateTiles = () => tileLayer.setUrl(tileUrl())
+    updateTiles()
+    const themeObserver = new MutationObserver(updateTiles)
+    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
+    mapRef.current = map
+    markerLayerRef.current = L.layerGroup().addTo(map)
+    window.setTimeout(() => map.invalidateSize(), 0)
+    return () => {
+      themeObserver.disconnect()
+      map.remove()
+      mapRef.current = null
+      markerLayerRef.current = null
+    }
+  }, [])
+
+  useEffect(() => {
+    const map = mapRef.current
+    const layer = markerLayerRef.current
+    if (!map || !layer) return
+    layer.clearLayers()
+    const mappedStops = locatedStops.filter(
+      (stop) => stop.latitude !== undefined && stop.longitude !== undefined,
+    )
+    const pin = L.divIcon({
+      className: 'bus-stop-pin',
+      html: '<span></span>',
+      iconSize: [24, 24],
+      iconAnchor: [12, 12],
+    })
+    const bounds: L.LatLngTuple[] = []
+    for (const stop of mappedStops) {
+      const point: L.LatLngTuple = [stop.latitude!, stop.longitude!]
+      bounds.push(point)
+      L.marker(point, { icon: pin })
+        .bindTooltip(stop.name, { direction: 'top', offset: [0, -10] })
+        .on('click', () => onSelectStop(stop))
+        .addTo(layer)
+    }
+    if (bounds.length > 1 && !userLocation) map.fitBounds(bounds, { padding: [24, 24], maxZoom: 15 })
+    else if (bounds.length === 1 && !userLocation) map.setView(bounds[0], 14)
+    else if (userLocation) map.setView(userLocation, 14)
+  }, [locatedStops, onSelectStop, userLocation])
+
+  const centerOnUser = () => {
+    if (!navigator.geolocation || locating) {
+      if (!navigator.geolocation) setMapError('A localização não está disponível neste aparelho.')
+      return
+    }
+    setLocating(true)
+    setMapError('')
+    navigator.geolocation.getCurrentPosition(
+      ({ coords }) => {
+        const location: [number, number] = [coords.latitude, coords.longitude]
+        setUserLocation(location)
+        mapRef.current?.flyTo(location, 14, { duration: 0.6 })
+        setLocating(false)
+      },
+      (error) => {
+        setMapError(
+          error.code === error.PERMISSION_DENIED
+            ? 'Permita a localização nos Ajustes para centralizar o mapa.'
+            : 'Não foi possível obter sua localização. Tente novamente.',
+        )
+        setLocating(false)
+      },
+      { enableHighAccuracy: false, maximumAge: 60_000, timeout: 10_000 },
+    )
+  }
+
+  return (
+    <section className="card stack bus-map-card" aria-label="Mapa de pontos de parada">
+      <div className="row between">
+        <div>
+          <b>Mapa de paradas</b>
+          <div className="muted small">
+            {locatedStops.filter((stop) => stop.latitude !== undefined && stop.longitude !== undefined).length} pontos no mapa
+            {userLocation ? ' · raio de 8 km' : ' · Grande Vitória'}
+          </div>
+        </div>
+        <button
+          type="button"
+          className="small"
+          style={{ minHeight: 44 }}
+          disabled={locating}
+          onClick={centerOnUser}
+          aria-label="Centralizar mapa na minha localização"
+        >
+          {locating ? 'localizando…' : 'minha localização'}
+        </button>
+      </div>
+      <div ref={containerRef} className="bus-stops-map" role="application" aria-label="Mapa interativo de paradas" />
+      {mapError && <div className="small amber" role="status">{mapError}</div>}
+      {userLocation && locatedStops.length === 0 && (
+        <div className="muted small">Nenhum ponto próximo entre os resultados carregados. Pesquise uma parada para exibi-la no mapa.</div>
+      )}
+      <div className="muted small bus-map-attribution">
+        Mapa © OpenStreetMap contributors · tiles © CARTO
+      </div>
+    </section>
+  )
+}
+
 function LiveStopsView() {
   const [query, setQuery] = useState('')
   const [stops, setStops] = useState<Stop[]>([])
@@ -149,6 +299,10 @@ function LiveStopsView() {
   const [refreshedAt, setRefreshedAt] = useState<Date | null>(null)
   const [refreshVersion, setRefreshVersion] = useState(0)
   const favoriteIdsKey = favoriteIds.join(',')
+  const mapStops = useMemo(
+    () => [...new Map([...favoriteStops, ...stops].map((stop) => [stop.id, stop])).values()],
+    [favoriteStops, stops],
+  )
 
   useEffect(() => {
     let active = true
@@ -244,12 +398,12 @@ function LiveStopsView() {
     setFavoriteError(null)
   }
 
-  const selectStop = (stop: Stop) => {
+  const selectStop = useCallback((stop: Stop) => {
     setSelectedStop(stop)
     setEstimates([])
     setEstimateError(null)
     setRefreshedAt(null)
-  }
+  }, [])
 
   return (
     <div className="stack">
@@ -278,6 +432,8 @@ function LiveStopsView() {
           Procure pelo nome da parada, endereço ou ponto de referência.
         </div>
       </div>
+
+      <BusStopsMap stops={mapStops} onSelectStop={selectStop} />
 
       {favoriteIds.length > 0 && (
         <div className="card stack">
@@ -362,7 +518,7 @@ function LiveStopsView() {
       )}
 
       {selectedStop && (
-        <div className="card stack">
+        <div className="card stack bus-stop-sheet" role="region" aria-label="Detalhes e previsões do ponto">
           <div className="row between" style={{ gap: 8 }}>
             <div>
               <b>{selectedStop.name}</b>
@@ -372,17 +528,37 @@ function LiveStopsView() {
                 </div>
               )}
             </div>
-            <button
-              type="button"
-              className="small ghost"
-              disabled={loadingEstimates}
-              onClick={() => setRefreshVersion((version) => version + 1)}
-              aria-label="Atualizar previsões de chegada"
-              title="Atualizar previsões"
-              style={{ minHeight: 44, minWidth: 44 }}
-            >
-              <RefreshIcon />
-            </button>
+            <div className="row" style={{ gap: 6 }}>
+              <button
+                type="button"
+                className={`small ${favoriteIds.includes(selectedStop.id) ? 'on' : 'ghost'}`}
+                onClick={() => toggleFavorite(selectedStop)}
+                aria-label={favoriteIds.includes(selectedStop.id) ? 'Remover ponto dos favoritos' : 'Favoritar ponto'}
+                style={{ minHeight: 44, minWidth: 44 }}
+              >
+                <StarIcon active={favoriteIds.includes(selectedStop.id)} />
+              </button>
+              <button
+                type="button"
+                className="small ghost"
+                disabled={loadingEstimates}
+                onClick={() => setRefreshVersion((version) => version + 1)}
+                aria-label="Atualizar previsões de chegada"
+                title="Atualizar previsões"
+                style={{ minHeight: 44, minWidth: 44 }}
+              >
+                <RefreshIcon />
+              </button>
+              <button
+                type="button"
+                className="small ghost"
+                onClick={() => setSelectedStop(null)}
+                aria-label="Fechar detalhes do ponto"
+                style={{ minHeight: 44, minWidth: 44 }}
+              >
+                ×
+              </button>
+            </div>
           </div>
           <div className="muted small">
             Previsões de chegada
@@ -426,6 +602,7 @@ function LiveStopsView() {
             )
           })}
           <div className="muted small">Atualização automática a cada 30 segundos.</div>
+          <div className="muted small">Dados em tempo real: Geocontrol / GVBus / Ceturb-ES</div>
         </div>
       )}
 

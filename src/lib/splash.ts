@@ -12,8 +12,8 @@ export const SPLASH_UNLOCK_MIN_INTERVAL_MS = 0
 export const SPLASH_STORAGE_KEY = 'meu_treino_last_splash_at'
 
 /** Tempo com a frase visível antes do fade-out e duração do fade-out (ms). */
-export const SPLASH_HOLD_MS = 1950
-export const SPLASH_FADEOUT_MS = 520
+export const SPLASH_HOLD_MS = 2200
+export const SPLASH_FADEOUT_MS = 850
 /** Com prefers-reduced-motion não há fade: a saudação some em corte seco após este tempo (ms). */
 export const SPLASH_REDUCED_MOTION_MS = 1400
 

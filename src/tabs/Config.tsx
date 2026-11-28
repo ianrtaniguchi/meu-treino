@@ -17,6 +17,13 @@ import {
 import type { Backup } from '../data/types'
 import { useSetting, useSyncStatus } from '../hooks'
 import {
+  DEFAULT_MAIN_NAV_TABS,
+  getAllowedMainNavTabs,
+  getMainNavTabsSettingKey,
+  normalizeMainNavTabs,
+  type MainNavTab,
+} from '../lib/navigation'
+import {
   DEFAULT_LOCK_TIMEOUT_MINUTES,
   disableLock,
   formatTimeoutLabel,
@@ -78,6 +85,9 @@ export default function Config() {
   const [profileNameDraft, setProfileNameDraft] = useState<string>('')
   const pendingOutbox = useLiveQuery(() => db.outbox.count(), [], 0)
   const syncStatus = useSyncStatus()
+  const mainNavTabsKey = getMainNavTabsSettingKey(syncStatus.user?.uid)
+  const savedMainNavTabs = useSetting<unknown>(mainNavTabsKey, DEFAULT_MAIN_NAV_TABS)
+  const [mainNavTabsDraft, setMainNavTabsDraft] = useState<MainNavTab[]>(DEFAULT_MAIN_NAV_TABS)
   const [persisted, setPersisted] = useState<boolean | null>(null)
   const [usage, setUsage] = useState<{ used?: number; quota?: number }>({})
   const [pending, setPending] = useState<Backup | null>(null)
@@ -117,6 +127,25 @@ export default function Config() {
   const [iosNotInstalled, setIosNotInstalled] = useState(() => isIosSafariNotInstalled())
   const [workerIfesStatus, setWorkerIfesStatus] = useState<IfesWorkerStatus | null>(null)
   const [pendingReminders, setPendingReminders] = useState<PushReminderItem[]>([])
+
+  useEffect(() => {
+    setMainNavTabsDraft(normalizeMainNavTabs(savedMainNavTabs, syncStatus.user?.uid))
+  }, [mainNavTabsKey, savedMainNavTabs, syncStatus.user?.uid])
+
+  const allowedMainNavTabs = getAllowedMainNavTabs(syncStatus.user?.uid)
+  const toggleMainNavTab = (next: MainNavTab) => {
+    setMainNavTabsDraft((current) =>
+      current.includes(next)
+        ? current.length > 1 ? current.filter((tab) => tab !== next) : current
+        : current.length < 4 ? [...current, next] : current,
+    )
+  }
+  const saveMainNavTabs = async () => {
+    const normalized = normalizeMainNavTabs(mainNavTabsDraft, syncStatus.user?.uid)
+    await setSetting(mainNavTabsKey, normalized)
+    setMainNavTabsDraft(normalized)
+    toast('Atalhos da navegação salvos')
+  }
 
   useEffect(() => {
     if (!syncStatus.user?.uid) {
@@ -495,6 +524,54 @@ export default function Config() {
               </button>
             )
           })}
+        </div>
+      </div>
+
+      <h3>atalhos da navegação</h3>
+      <div className="card stack">
+        <div className="muted small">
+          Escolha quatro abas. A esfera central do Assistente permanece fixa.
+        </div>
+        <div className="chips" role="group" aria-label="Atalhos da barra inferior">
+          {allowedMainNavTabs.map((navTab) => {
+            const checked = mainNavTabsDraft.includes(navTab)
+            const label: Record<MainNavTab, string> = {
+              hoje: 'Hoje',
+              treino: 'Treino',
+              dieta: 'Dieta',
+              corpo: 'Corpo',
+              noticias: 'Notícias',
+              onibus: 'Ônibus',
+              faculdade: 'Faculdade',
+              gastos: 'Gastos',
+              config: 'Configurações',
+            }
+            return (
+              <button
+                key={navTab}
+                type="button"
+                className={`small ${checked ? 'on' : 'ghost'}`}
+                style={{ minHeight: 44 }}
+                aria-pressed={checked}
+                disabled={!checked && mainNavTabsDraft.length >= 4}
+                onClick={() => toggleMainNavTab(navTab)}
+              >
+                {checked ? '✓ ' : ''}{label[navTab]}
+              </button>
+            )
+          })}
+        </div>
+        <div className="row between">
+          <span className="muted small">{mainNavTabsDraft.length}/4 selecionados</span>
+          <button
+            type="button"
+            className="primary small"
+            style={{ minHeight: 44 }}
+            disabled={mainNavTabsDraft.length !== 4}
+            onClick={() => void saveMainNavTabs()}
+          >
+            salvar atalhos
+          </button>
         </div>
       </div>
 

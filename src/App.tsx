@@ -6,6 +6,7 @@ import { db, setSetting } from './data/db'
 import { ensureSeed } from './data/seed'
 import { initSyncManager, subscribeLoginSuccess } from './data/sync'
 import { useSetting, useSyncStatus } from './hooks'
+import { DEFAULT_MAIN_NAV_TABS, getMainNavTabsSettingKey, normalizeMainNavTabs } from './lib/navigation'
 import {
   DEFAULT_LOCK_TIMEOUT_MINUTES,
   getLockConfig,
@@ -57,20 +58,6 @@ import {
 
 type Tab = 'hoje' | 'treino' | 'dieta' | 'corpo' | 'assistente' | 'noticias' | 'onibus' | 'faculdade' | 'gastos' | 'config'
 const ALL_TABS: Tab[] = ['hoje', 'treino', 'dieta', 'corpo', 'assistente', 'noticias', 'onibus', 'faculdade', 'gastos', 'config']
-/**
- * Barra inferior Liquid Glass 100% simétrica com 5 slots iguais (20% cada):
- * - Esquerda: hoje, treino
- * - Centro (50%): assistente (Esfera da IA --orb-size: 66px)
- * - Direita: onibus, config
- */
-const NAV_TABS: Tab[] = ['hoje', 'treino', 'assistente', 'onibus', 'config']
-const NAV_SLOTS: Array<{ tab: Tab; left: number; width: number }> = [
-  { tab: 'hoje', left: 0, width: 0.2 },
-  { tab: 'treino', left: 0.2, width: 0.2 },
-  { tab: 'assistente', left: 0.4, width: 0.2 },
-  { tab: 'onibus', left: 0.6, width: 0.2 },
-  { tab: 'config', left: 0.8, width: 0.2 },
-]
 const TAB_LABELS: Record<Tab, string> = {
   hoje: 'Hoje',
   treino: 'Treino, Dieta e Corpo',
@@ -166,6 +153,17 @@ export default function App() {
   const ifesReadIds = Array.isArray(ifesReadIdsRaw) ? ifesReadIdsRaw : []
   const unreadNoticiasCount = countUnreadNoticias(noticiasItems, ifesReadIds)
   const syncStatus = useSyncStatus()
+  const mainNavTabsSetting = useSetting<unknown>(
+    getMainNavTabsSettingKey(syncStatus.user?.uid),
+    DEFAULT_MAIN_NAV_TABS,
+  )
+  const mainNavTabs = normalizeMainNavTabs(mainNavTabsSetting, syncStatus.user?.uid)
+  const navTabs: Tab[] = [...mainNavTabs.slice(0, 2), 'assistente', ...mainNavTabs.slice(2)]
+  const navSlots = navTabs.map((navTab, index) => ({
+    tab: navTab,
+    left: index / navTabs.length,
+    width: 1 / navTabs.length,
+  }))
 
   const resolvedGreetingName = (() => {
     const custom = (profileNameSetting ?? '').trim()
@@ -480,9 +478,9 @@ export default function App() {
   const stale = Date.now() - ref > WEEK
   const days = Math.floor((Date.now() - ref) / 86400000)
   const isCurrentlyLocked = Boolean(locked && lockConfig.enabled)
-  const navIdx = NAV_TABS.indexOf(tab)
-  const activeTabIndex = navIdx >= 0 ? navIdx : Math.max(0, NAV_TABS.indexOf(lastNonConfigTab))
-  const activeSlot = NAV_SLOTS[activeTabIndex] ?? NAV_SLOTS[0]
+  const navIdx = navTabs.indexOf(tab)
+  const activeTabIndex = navIdx >= 0 ? navIdx : Math.max(0, navTabs.indexOf(lastNonConfigTab))
+  const activeSlot = navSlots[activeTabIndex] ?? navSlots[0]
 
   const pickTabFromClientX = (clientX: number) => {
     const navEl = navRef.current
@@ -492,8 +490,8 @@ export default function App() {
     const innerWidth = Math.max(1, rect.width - 10)
     const rel = Math.min(0.9999, Math.max(0, (clientX - innerLeft) / innerWidth))
     const hit =
-      NAV_SLOTS.find((s) => rel >= s.left && rel < s.left + s.width) ??
-      NAV_SLOTS[NAV_SLOTS.length - 1]
+      navSlots.find((s) => rel >= s.left && rel < s.left + s.width) ??
+      navSlots[navSlots.length - 1]
     if (hit && hit.tab !== tab) {
       selectTab(hit.tab)
     }
@@ -574,7 +572,7 @@ export default function App() {
           style={
             {
               '--active-idx': activeTabIndex,
-              '--tab-count': NAV_TABS.length,
+              '--tab-count': navTabs.length,
               '--lens-left': activeSlot.left,
               '--lens-width': activeSlot.width,
               ...(isCurrentlyLocked ? { visibility: 'hidden', pointerEvents: 'none' } : {}),
@@ -607,7 +605,7 @@ export default function App() {
             className={`tabbar-lens${navIdx < 0 ? ' hidden' : ''}`}
             aria-hidden="true"
           />
-          {NAV_SLOTS.map(({ tab: k, width }) => {
+          {navSlots.map(({ tab: k, width }) => {
             const isActive = tab === k
             const isAi = k === 'assistente'
             const label = TAB_LABELS[k]

@@ -1,4 +1,4 @@
-import { DB_VERSION, SYNCABLE_SETTINGS, db, migrateBodyV2, migrateRecordV3, migrateSessionV2, pkOf, recordDocId, runApplyingRemote, uid } from './db'
+import { DB_VERSION, isSyncableSettingKey, db, migrateBodyV2, migrateRecordV3, migrateSessionV2, pkOf, recordDocId, runApplyingRemote, uid } from './db'
 import { LOCK_SETTING_KEYS } from '../lib/lock'
 import { containsFinancialIdentifier } from '../lib/expenses'
 import { TABLE_NAMES, type Backup, type OutboxEntry, type Snapshot, type SnapshotKind, type TableName } from './types'
@@ -151,7 +151,7 @@ function buildOutboxForRows(table: TableName, rows: any[], now = Date.now()): Ou
   const out: OutboxEntry[] = []
   for (const r of rows) {
     if (!r || typeof r !== 'object') continue
-    if (table === 'settings' && !SYNCABLE_SETTINGS.has(String(r.key))) continue
+    if (table === 'settings' && !isSyncableSettingKey(String(r.key))) continue
     if ((table === 'exercises' || table === 'foods') && r.builtin && r.updatedAt === 1 && !r.deleted) continue
     const pk = String(r[pkField])
     out.push({

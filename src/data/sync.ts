@@ -25,7 +25,7 @@ import {
 } from 'firebase/firestore'
 import { firebaseConfig } from '../firebaseConfig'
 import { createSnapshot } from './backup'
-import { SYNCABLE_SETTINGS, db, getRawRecord, getRawTable, onLocalWrite, pkOf, recordDocId, runApplyingRemote, waitPendingOutbox } from './db'
+import { SYNCABLE_SETTINGS, db, getRawRecord, getRawTable, isSyncableSettingKey, onLocalWrite, pkOf, recordDocId, runApplyingRemote, waitPendingOutbox } from './db'
 import { TABLE_NAMES, type CloudRecord, type OutboxEntry, type TableName } from './types'
 
 // ---------- Abstração de transporte (permite mock limpo nos testes sem rede) ----------
@@ -109,7 +109,7 @@ export function resetCloudAdapter() {
 
 export function isSyncableRecord(table: TableName, row: any): boolean {
   if (!row || typeof row !== 'object') return false
-  if (table === 'settings') return SYNCABLE_SETTINGS.has(String(row.key))
+  if (table === 'settings') return isSyncableSettingKey(String(row.key))
   // Exercícios/alimentos padrão intactos (updatedAt === 1 e não excluídos) não precisam poluir a nuvem
   if ((table === 'exercises' || table === 'foods') && row.builtin && row.updatedAt === 1 && !row.deleted) {
     return false
@@ -664,6 +664,10 @@ export async function isolateAccountOnSwitch(nextUid: string): Promise<boolean> 
           for (const k of SYNCABLE_SETTINGS) {
             await db.settings.delete(k)
           }
+          const navSettingKeys = (await db.settings.toArray())
+            .filter((setting) => setting.key.startsWith('mainNavTabs:'))
+            .map((setting) => setting.key)
+          if (navSettingKeys.length > 0) await db.settings.bulkDelete(navSettingKeys)
           await db.settings.delete('lastSyncAt')
           await db.settings.put({
             key: 'activeAccountUid',
