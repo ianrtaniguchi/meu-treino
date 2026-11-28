@@ -8,7 +8,11 @@ import {
   runIfesCron,
   sendTestPushToUserTokens,
 } from './ifes'
-import { handleCeturbProxyRequest, resetCeturbCachesForTest } from './ceturb'
+import {
+  handleCeturbProxyRequest,
+  handleGeocontrolProxyRequest,
+  resetCeturbCachesForTest,
+} from './ceturb'
 
 export const DEFAULT_OWNER_UID = 'tH4A7sYnH1WDUdBVDd1mfltMPdj2'
 export const OWNER_DAILY_MSG_LIMIT = 150
@@ -1403,6 +1407,9 @@ export async function handleRequest(
   // Rotas públicas de proxy com cache da Ceturb-ES (/ceturb/lines, /ceturb/schedules, /ceturb/itinerary, /ceturb/integrations, /ceturb/fares)
   if (url.pathname.startsWith('/ceturb/')) {
     return handleCeturbProxyRequest(url, request, buildCorsHeaders(origin), { fetcher, nowMs })
+  }
+  if (url.pathname.startsWith('/geocontrol/')) {
+    return handleGeocontrolProxyRequest(url, request, buildCorsHeaders(origin), { fetcher })
   }
 
   const isAnalyzeMeal = url.pathname === '/analyze-meal'

@@ -28,10 +28,21 @@ const STORAGE_KEY_SCHED_PREFIX = 'meu_treino_ceturb_sched_v1_'
 const STORAGE_KEY_ITIN_PREFIX = 'meu_treino_ceturb_itin_v1_'
 const STORAGE_KEY_INTEGRATIONS = 'meu_treino_ceturb_integrations_v1'
 const STORAGE_KEY_FARES = 'meu_treino_ceturb_fares_v1'
+const STORAGE_KEY_STOP_DETAILS_PREFIX = 'meu_treino_geocontrol_stops_v1_'
+const STORAGE_KEY_FAVORITE_STOPS = 'meu_treino_geocontrol_favorites_v1'
 
 const LOCAL_LINES_TTL_MS = 24 * 60 * 60_000 // 24h
 const LOCAL_SCHED_TTL_MS = 6 * 60 * 60_000 // 6h
 const LOCAL_ITIN_TTL_MS = 24 * 60 * 60_000 // 24h
+const LOCAL_STOP_DETAILS_TTL_MS = 6 * 60 * 60_000 // 6h
+
+export type GeocontrolJson =
+  | string
+  | number
+  | boolean
+  | null
+  | GeocontrolJson[]
+  | { [key: string]: GeocontrolJson }
 
 /**
  * Fallback local com as principais linhas da Grande Vitória (Transcol + Aquaviário + Bike GV)
@@ -342,9 +353,13 @@ export function filterLines(lines: CeturbLine[], query: string): CeturbLine[] {
 // ---------- Favoritos e Recentes (localStorage isolado por UID quando autenticado) ----------
 
 function getScopedFavoritesKey(): string {
+  return getScopedStorageKey(STORAGE_KEY_FAVORITES)
+}
+
+function getScopedStorageKey(baseKey: string): string {
   const storage = getStorage()
   const activeUid = storage?.getItem('meu_treino_active_uid')?.trim()
-  return activeUid ? `${STORAGE_KEY_FAVORITES}_${activeUid}` : STORAGE_KEY_FAVORITES
+  return activeUid ? `${baseKey}_${activeUid}` : baseKey
 }
 
 export function getFavoriteLineIds(): string[] {
@@ -363,6 +378,24 @@ export function toggleFavoriteLineId(lineId: string): string[] {
     ? current.filter((id) => id !== normId)
     : [normId, ...current]
   writeStorageJson(getScopedFavoritesKey(), next)
+  return next
+}
+
+export function getFavoriteStopIds(): number[] {
+  const favoriteIds = readStorageJson<unknown>(getScopedStorageKey(STORAGE_KEY_FAVORITE_STOPS))
+  if (!Array.isArray(favoriteIds)) return []
+  return [...new Set(favoriteIds.filter((id): id is number => Number.isSafeInteger(id) && id > 0))]
+}
+
+export function toggleFavoriteStopId(stopId: number): number[] {
+  if (!Number.isSafeInteger(stopId) || stopId <= 0) {
+    throw new Error('O identificador do ponto de parada é inválido.')
+  }
+  const current = getFavoriteStopIds()
+  const next = current.includes(stopId)
+    ? current.filter((id) => id !== stopId)
+    : [stopId, ...current]
+  writeStorageJson(getScopedStorageKey(STORAGE_KEY_FAVORITE_STOPS), next)
   return next
 }
 
@@ -600,6 +633,85 @@ export interface CeturbServiceOptions {
 
 function getWorkerBaseUrl(override?: string): string {
   return (override ?? ASSISTANT_WORKER_URL ?? '').trim().replace(/\/+$/, '')
+}
+
+async function postGeocontrol(
+  endpoint: string,
+  payload: Record<string, GeocontrolJson>,
+  options: CeturbServiceOptions = {},
+): Promise<GeocontrolJson> {
+  const workerUrl = getWorkerBaseUrl(options.workerBaseUrl)
+  if (!workerUrl) {
+    throw new Error('O serviço de ônibus em tempo real não está configurado.')
+  }
+
+  const response = await (options.fetcher ?? fetch)(`${workerUrl}/geocontrol/${endpoint}`, {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+    cache: 'no-store',
+  })
+  if (!response.ok) {
+    throw new Error(`Falha ao consultar dados Geocontrol (${response.status}).`)
+  }
+  return (await response.json()) as GeocontrolJson
+}
+
+export async function pesquisarPontosDeParada(
+  texto: string,
+  options: CeturbServiceOptions = {},
+): Promise<GeocontrolJson> {
+  const query = texto.trim()
+  if (!query) throw new Error('Informe um nome, rua ou referência para buscar pontos.')
+  return postGeocontrol('pesquisarPontosDeParada', { texto: query }, options)
+}
+
+export async function listarPontosDeParada(
+  listaIds: number[],
+  options: CeturbServiceOptions = {},
+): Promise<GeocontrolJson> {
+  const ids = [...new Set(listaIds)]
+  if (ids.some((id) => !Number.isSafeInteger(id) || id <= 0)) {
+    throw new Error('A lista contém um identificador de ponto inválido.')
+  }
+  if (ids.length === 0) return []
+
+  const sortedIds = [...ids].sort((a, b) => a - b)
+  const storageKey = `${STORAGE_KEY_STOP_DETAILS_PREFIX}${sortedIds.join(',')}`
+  const nowMs = Date.now()
+  if (!options.forceRefresh) {
+    const cached = readStorageJson<{ data: GeocontrolJson; savedAt: number }>(storageKey)
+    if (cached && nowMs - cached.savedAt < LOCAL_STOP_DETAILS_TTL_MS) {
+      return cached.data
+    }
+  }
+
+  const data = await postGeocontrol('listarPontosDeParada', { listaIds: ids }, options)
+  writeStorageJson(storageKey, { data, savedAt: nowMs })
+  return data
+}
+
+export async function obterEstimativasPorOrigem(
+  pontoDeOrigemId: number,
+  options: CeturbServiceOptions = {},
+): Promise<GeocontrolJson> {
+  if (!Number.isSafeInteger(pontoDeOrigemId) || pontoDeOrigemId <= 0) {
+    throw new Error('O identificador do ponto de origem é inválido.')
+  }
+  return postGeocontrol('obterEstimativasPorOrigem', { pontoDeOrigemId }, options)
+}
+
+export async function obterUltimaPosicaoDoVeiculo(
+  veiculoIds: number[],
+  options: CeturbServiceOptions = {},
+): Promise<GeocontrolJson> {
+  if (veiculoIds.some((id) => !Number.isSafeInteger(id) || id <= 0)) {
+    throw new Error('A lista contém um identificador de veículo inválido.')
+  }
+  return postGeocontrol('obterUltimaPosicaoDoVeiculo', { veiculoIds }, options)
 }
 
 /**
