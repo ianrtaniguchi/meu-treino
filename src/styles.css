@@ -360,9 +360,9 @@ button, input, select, textarea { font-family: var(--sans); font-variant-numeric
 .tabbar {
   position: fixed;
   left: 50%;
-  bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+  bottom: calc(8px + var(--sab));
   transform: translateX(-50%);
-  z-index: 40;
+  z-index: 60;
   display: flex;
   align-items: center;
   overflow: visible;
@@ -621,15 +621,15 @@ h3 {
   border-radius: calc(var(--radius-md) - 3px);
   border: 1px solid transparent;
   background: transparent;
-  color: var(--muted);
+  color: var(--text-secondary);
   font-size: 13px;
   font-weight: 500;
   box-shadow: none;
 }
 .fitness-seg button.on {
-  background: var(--btn-primary-bg);
-  border-color: var(--btn-primary-border);
-  color: var(--text);
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
   font-weight: 600;
 }
 .prompt-heading-group {
@@ -1266,6 +1266,9 @@ label.field > input, label.field > select, label.field > textarea { margin-top: 
   background: var(--surface2);
   z-index: 0;
 }
+html[data-theme="dark"] .bus-stops-map .leaflet-tile-pane {
+  filter: brightness(0.68) invert(1) contrast(2.6) hue-rotate(200deg) saturate(0.3) brightness(0.78);
+}
 .bus-map-card {
   overflow: hidden;
 }
@@ -1328,6 +1331,24 @@ label.field > input, label.field > select, label.field > textarea { margin-top: 
 }
 .assistant-suggestions {
   text-align: center;
+}
+.assistant-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.assistant-config-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  min-width: 44px;
+  height: 44px;
+  padding: 10px;
+}
+.assistant-config-button svg {
+  width: 20px;
+  height: 20px;
 }
 .assistant-suggestions .chips {
   justify-content: center;
