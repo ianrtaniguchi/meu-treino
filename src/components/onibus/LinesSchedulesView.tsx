@@ -146,9 +146,11 @@ function StarIcon({ active }: { active: boolean }) {
 function BusStopsMap({
   stops,
   onSelectStop,
+  selectedStop,
 }: {
   stops: Stop[]
   onSelectStop: (stop: Stop) => void
+  selectedStop: Stop | null
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const mapRef = useRef<L.Map | null>(null)
@@ -172,24 +174,14 @@ function BusStopsMap({
       zoom: 12,
       scrollWheelZoom: false,
     })
-    const tileStyle = () => document.documentElement.getAttribute('data-theme') === 'dark'
-      ? 'dark_all'
-      : 'light_all'
-    const tileUrl = () => `https://{s}.basemaps.cartocdn.com/${tileStyle()}/{z}/{x}/{y}{r}.png`
-    const tileLayer = L.tileLayer(tileUrl(), {
-      attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
-      subdomains: 'abcd',
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; OpenStreetMap contributors',
       maxZoom: 20,
     }).addTo(map)
-    const updateTiles = () => tileLayer.setUrl(tileUrl())
-    updateTiles()
-    const themeObserver = new MutationObserver(updateTiles)
-    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
     mapRef.current = map
     markerLayerRef.current = L.layerGroup().addTo(map)
     window.setTimeout(() => map.invalidateSize(), 0)
     return () => {
-      themeObserver.disconnect()
       map.remove()
       mapRef.current = null
       markerLayerRef.current = null
@@ -223,6 +215,16 @@ function BusStopsMap({
     else if (bounds.length === 1 && !userLocation) map.setView(bounds[0], 14)
     else if (userLocation) map.setView(userLocation, 14)
   }, [locatedStops, onSelectStop, userLocation])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || selectedStop?.latitude === undefined || selectedStop.longitude === undefined) return
+    map.flyTo(
+      [selectedStop.latitude, selectedStop.longitude],
+      Math.max(map.getZoom(), 15),
+      { duration: 0.6 },
+    )
+  }, [selectedStop?.id, selectedStop?.latitude, selectedStop?.longitude])
 
   const centerOnUser = () => {
     if (!navigator.geolocation || locating) {
@@ -277,7 +279,7 @@ function BusStopsMap({
         <div className="muted small">Nenhum ponto próximo entre os resultados carregados. Pesquise uma parada para exibi-la no mapa.</div>
       )}
       <div className="muted small bus-map-attribution">
-        Mapa © OpenStreetMap contributors · tiles © CARTO
+        © OpenStreetMap contributors
       </div>
     </section>
   )
@@ -433,34 +435,38 @@ function LiveStopsView() {
         </div>
       </div>
 
-      <BusStopsMap stops={mapStops} onSelectStop={selectStop} />
-
-      {favoriteIds.length > 0 && (
-        <div className="card stack">
-          <div className="row between">
-            <b>Pontos favoritos</b>
-            <span className="muted small">{favoriteIds.length}</span>
-          </div>
-          {favoriteError && <div className="amber small">{favoriteError}</div>}
-          {favoriteStops.length > 0 ? (
-            <div className="chips">
-              {favoriteStops.map((stop) => (
-                <button
-                  key={stop.id}
-                  type="button"
-                  className={`small ${selectedStop?.id === stop.id ? 'on' : ''}`}
-                  onClick={() => selectStop(stop)}
-                  style={{ minHeight: 44 }}
-                >
-                  {stop.name}
-                </button>
-              ))}
-            </div>
-          ) : !favoriteError ? (
-            <div className="muted small">Carregando os detalhes dos pontos favoritos...</div>
-          ) : null}
+      <div className="card stack">
+        <div className="row between">
+          <b>Pontos favoritos</b>
+          <span className="muted small">{favoriteIds.length}</span>
         </div>
-      )}
+        {favoriteError && <div className="amber small">{favoriteError}</div>}
+        {favoriteStops.length > 0 ? (
+          <div className="chips">
+            {favoriteStops.map((stop) => (
+              <button
+                key={stop.id}
+                type="button"
+                className={`small ${selectedStop?.id === stop.id ? 'on' : ''}`}
+                onClick={() => selectStop(stop)}
+                style={{ minHeight: 44 }}
+              >
+                {stop.name}
+              </button>
+            ))}
+          </div>
+        ) : favoriteIds.length === 0 ? (
+          <div className="muted small">Marque uma parada com a estrela para acessá-la rapidamente.</div>
+        ) : !favoriteError ? (
+          <div className="muted small">Carregando os detalhes dos pontos favoritos...</div>
+        ) : null}
+      </div>
+
+      <BusStopsMap
+        stops={mapStops}
+        onSelectStop={selectStop}
+        selectedStop={selectedStop}
+      />
 
       {stops.length > 0 && (
         <div className="card stack">
@@ -624,7 +630,7 @@ export default function LinesSchedulesView({
   onSelectLine,
 }: LinesSchedulesViewProps) {
   const [query, setQuery] = useState<string>('')
-  const [activeView, setActiveView] = useState<'linhas' | 'ao-vivo'>('linhas')
+  const [activeView, setActiveView] = useState<'linhas' | 'ao-vivo'>('ao-vivo')
 
   const favoriteSet = useMemo(() => new Set(favoriteIds), [favoriteIds])
 

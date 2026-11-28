@@ -68,8 +68,7 @@ export default function Assistente() {
   const [voiceState, setVoiceState] = useState<'idle' | 'recording' | 'transcribing'>('idle')
   const [recordSec, setRecordSec] = useState(0)
   const recorderRef = useRef<ActiveAudioRecorder | null>(null)
-  const galleryInputRef = useRef<HTMLInputElement | null>(null)
-  const cameraInputRef = useRef<HTMLInputElement | null>(null)
+  const photoInputRef = useRef<HTMLInputElement | null>(null)
   const chatBottomRef = useRef<HTMLDivElement | null>(null)
   const didInitialScrollRef = useRef<boolean>(false)
 
@@ -166,8 +165,7 @@ export default function Assistente() {
     setSelectedPhoto(file)
     setPhotoPreview(URL.createObjectURL(file))
     setErr('')
-    if (galleryInputRef.current) galleryInputRef.current.value = ''
-    if (cameraInputRef.current) cameraInputRef.current.value = ''
+    if (photoInputRef.current) photoInputRef.current.value = ''
   }
 
   const handleSendPhoto = async () => {
@@ -452,11 +450,22 @@ export default function Assistente() {
       <PromptTitle
         path="~/assistente"
         rightSlot={
-          history.length > 0 ? (
-            <button className="small" disabled={busy} onClick={() => void handleClear()}>
-              limpar
+          <div className="assistant-header-actions">
+            <button
+              type="button"
+              className="small ghost assistant-config-button"
+              onClick={() => onNavigateTab?.('config')}
+              aria-label="Abrir configurações"
+              title="Configurações"
+            >
+              <Icon name="settings" />
             </button>
-          ) : undefined
+            {history.length > 0 && (
+              <button className="small" disabled={busy} onClick={() => void handleClear()}>
+                limpar
+              </button>
+            )}
+          </div>
         }
       />
 
@@ -588,18 +597,11 @@ export default function Assistente() {
 
       <div className="card stack" style={{ marginTop: 10 }}>
         <input
-          ref={galleryInputRef}
+          ref={photoInputRef}
           type="file"
           accept="image/*"
           hidden
-          onChange={(event) => handlePhotoSelection(event.target.files?.[0])}
-        />
-        <input
-          ref={cameraInputRef}
-          type="file"
-          accept="image/*"
-          capture="environment"
-          hidden
+          style={{ display: 'none' }}
           onChange={(event) => handlePhotoSelection(event.target.files?.[0])}
         />
         {selectedPhoto && photoPreview && (
@@ -713,20 +715,11 @@ export default function Assistente() {
               className="small ghost"
               style={{ minHeight: 44 }}
               disabled={!canUse || busy}
-              onClick={() => galleryInputRef.current?.click()}
+              onClick={() => photoInputRef.current?.click()}
+              aria-label="Adicionar foto da galeria ou câmera"
             >
               <span className="assistant-media-icon"><Icon name="image" /></span>
-              galeria
-            </button>
-            <button
-              type="button"
-              className="small ghost"
-              style={{ minHeight: 44 }}
-              disabled={!canUse || busy}
-              onClick={() => cameraInputRef.current?.click()}
-            >
-              <span className="assistant-media-icon"><Icon name="camera" /></span>
-              câmera
+              adicionar foto
             </button>
           </div>
         )}

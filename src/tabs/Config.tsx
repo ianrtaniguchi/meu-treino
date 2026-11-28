@@ -123,6 +123,10 @@ export default function Config() {
   const [notifMsg, setNotifMsg] = useState('')
   const [notifErr, setNotifErr] = useState('')
   const [permissionLabel, setPermissionLabel] = useState(() => getNotificationPermissionLabel())
+  const [locationPermission, setLocationPermission] = useState<PermissionState | 'unknown' | 'unsupported'>('unknown')
+  const [locationBusy, setLocationBusy] = useState(false)
+  const [locationMessage, setLocationMessage] = useState('')
+  const [locationError, setLocationError] = useState('')
   const [standalonePwa, setStandalonePwa] = useState(() => isStandalonePwa())
   const [iosNotInstalled, setIosNotInstalled] = useState(() => isIosSafariNotInstalled())
   const [workerIfesStatus, setWorkerIfesStatus] = useState<IfesWorkerStatus | null>(null)
@@ -131,6 +135,36 @@ export default function Config() {
   useEffect(() => {
     setMainNavTabsDraft(normalizeMainNavTabs(savedMainNavTabs, syncStatus.user?.uid))
   }, [mainNavTabsKey, savedMainNavTabs, syncStatus.user?.uid])
+
+  useEffect(() => {
+    let active = true
+    let permissionStatus: PermissionStatus | null = null
+    const updatePermission = () => {
+      if (active && permissionStatus) setLocationPermission(permissionStatus.state)
+    }
+
+    if (!navigator.geolocation) {
+      setLocationPermission('unsupported')
+    } else if (navigator.permissions?.query) {
+      void navigator.permissions.query({ name: 'geolocation' })
+        .then((status) => {
+          if (!active) return
+          permissionStatus = status
+          updatePermission()
+          status.addEventListener('change', updatePermission)
+        })
+        .catch(() => {
+          if (active) setLocationPermission('unknown')
+        })
+    } else {
+      setLocationPermission('unknown')
+    }
+
+    return () => {
+      active = false
+      permissionStatus?.removeEventListener('change', updatePermission)
+    }
+  }, [])
 
   const allowedMainNavTabs = getAllowedMainNavTabs(syncStatus.user?.uid)
   const toggleMainNavTab = (next: MainNavTab) => {
@@ -208,6 +242,36 @@ export default function Config() {
     } finally {
       setNotifBusy(false)
     }
+  }
+
+  const handleRequestLocation = () => {
+    setLocationError('')
+    setLocationMessage('')
+    if (!navigator.geolocation) {
+      setLocationPermission('unsupported')
+      setLocationError('Este navegador ou aparelho não disponibiliza localização.')
+      return
+    }
+    setLocationBusy(true)
+    navigator.geolocation.getCurrentPosition(
+      () => {
+        setLocationPermission('granted')
+        setLocationMessage('Permissão concedida neste navegador.')
+        setLocationBusy(false)
+      },
+      (error) => {
+        if (error.code === error.PERMISSION_DENIED) {
+          setLocationPermission('denied')
+          setLocationError('Permissão negada. Libere a localização nos ajustes do navegador ou do aparelho.')
+        } else if (error.code === error.POSITION_UNAVAILABLE) {
+          setLocationError('A localização não está disponível agora. Verifique o GPS e tente novamente.')
+        } else {
+          setLocationError('A solicitação de localização expirou. Tente novamente.')
+        }
+        setLocationBusy(false)
+      },
+      { enableHighAccuracy: false, maximumAge: 0, timeout: 10_000 },
+    )
   }
 
   const handleToggleFcmEnabled = async () => {
@@ -769,6 +833,41 @@ export default function Config() {
             })}
           </div>
         </div>
+      </div>
+
+      <h2>privacidade e permissões</h2>
+      <div className="card stack">
+        <div className="row between">
+          <div className="grow">
+            Localização (GPS)
+            <div className="muted small">A permissão é controlada pelo navegador e não altera seus dados do app.</div>
+          </div>
+          <b className={locationPermission === 'granted' ? 'green' : locationPermission === 'denied' ? 'red' : 'amber'}>
+            {locationPermission === 'granted'
+              ? 'permitida'
+              : locationPermission === 'denied'
+                ? 'negada'
+                : locationPermission === 'prompt'
+                  ? 'não solicitada'
+                  : locationPermission === 'unsupported'
+                    ? 'indisponível'
+                    : 'não verificada'}
+          </b>
+        </div>
+        <button
+          type="button"
+          className="primary block"
+          style={{ minHeight: 44 }}
+          disabled={locationBusy || locationPermission === 'unsupported'}
+          onClick={handleRequestLocation}
+        >
+          {locationBusy ? 'consultando localização…' : 'solicitar / atualizar permissão'}
+        </button>
+        <div className="muted small">
+          No iOS/Safari, se estiver bloqueada, libere em Ajustes → Privacidade e Segurança → Serviços de Localização e nos ajustes do Safari.
+        </div>
+        {locationMessage && <div className="small green" role="status">{locationMessage}</div>}
+        {locationError && <div className="small red" role="alert">{locationError}</div>}
       </div>
 
       <h2>notificações</h2>
