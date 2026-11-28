@@ -105,6 +105,10 @@
   --radius-md: 10px;
   --radius-lg: 14px;
   --r: var(--radius-md);
+  --space-xs: 6px;
+  --space-sm: 10px;
+  --space-md: 14px;
+  --space-lg: 18px;
   --sat: env(safe-area-inset-top, 0px);
   --sab: env(safe-area-inset-bottom, 0px);
   --tabbar-h: 62px;
@@ -525,10 +529,10 @@ button, input, select, textarea { font-family: var(--sans); font-variant-numeric
   font-family: var(--mono); font-size: 10px; font-weight: 600; line-height: 16px; text-align: center;
 }
 .news-link-btn {
-  display: inline-flex; align-items: center; gap: 4px;
-  min-height: 36px; padding: 6px 13px; border-radius: var(--radius-sm);
+  display: inline-flex; align-items: center; justify-content: center; gap: var(--space-xs);
+  min-height: 44px; padding: 8px 14px; border-radius: var(--radius-sm);
   border: 1px solid var(--btn-primary-border); background: var(--btn-on-bg);
-  color: var(--text); font-size: 12px; font-weight: 500; text-decoration: none;
+  color: var(--text); font-size: 12.5px; font-weight: 500; text-decoration: none;
 }
 
 /* Hierarquia Tipográfica: Newsreader nos títulos e números grandes; Inter no corpo; Mono nos caminhos e dados */
@@ -603,8 +607,8 @@ h3 {
   border: 1px solid var(--border);
 }
 .fitness-seg button {
-  min-height: 36px;
-  padding: 6px 10px;
+  min-height: 44px;
+  padding: 8px 12px;
   border-radius: calc(var(--radius-md) - 3px);
   border: 1px solid transparent;
   background: transparent;
@@ -644,9 +648,9 @@ h3 {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 36px;
-  height: 36px;
-  min-height: 36px;
+  width: 44px;
+  height: 44px;
+  min-height: 44px;
   padding: 0;
   border-radius: 9999px;
   border: 1px solid transparent;
@@ -672,8 +676,8 @@ h3 {
 }
 .implicit-config-dot {
   position: absolute;
-  top: 6px;
-  right: 6px;
+  top: 9px;
+  right: 9px;
   width: 6px;
   height: 6px;
   border-radius: 999px;
@@ -739,11 +743,15 @@ h3 {
 }
 .date-nav > button {
   padding: 0;
-  min-height: 40px;
+  min-height: 44px;
 }
 
 /* Botões contidos: grafite escuro com borda dourada fina nos CTAs principais */
 button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-xs);
   min-height: 44px;
   padding: 10px 16px;
   border-radius: var(--radius-md);
@@ -795,9 +803,9 @@ button.ghost {
   color: var(--muted);
 }
 button.small {
-  min-height: 36px;
-  padding: 7px 13px;
-  font-size: 12px;
+  min-height: 44px;
+  padding: 8px 14px;
+  font-size: 12.5px;
   border-radius: var(--radius-sm);
 }
 button.block { width: 100%; }
@@ -873,8 +881,8 @@ label.field > input, label.field > select, label.field > textarea { margin-top: 
   border: 0;
   border-bottom: 2px solid transparent;
   border-radius: 0;
-  min-height: 42px;
-  padding: 0 2px;
+  min-height: 44px;
+  padding: 0 4px;
   color: var(--muted);
   font-size: 13.5px;
   font-weight: 400;
@@ -945,9 +953,9 @@ label.field > input, label.field > select, label.field > textarea { margin-top: 
   cursor: pointer;
 }
 
-.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 135px), 1fr)); gap: 12px; }
-.grid3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 96px), 1fr)); gap: 12px; }
-.grid4 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 120px), 1fr)); gap: 12px; }
+.grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-sm); }
+.grid3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-sm); }
+.grid4 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 120px), 1fr)); gap: var(--space-sm); }
 .stat { border-left: 1.5px solid var(--border); padding-left: 12px; }
 .stat b {
   display: block;
@@ -1084,8 +1092,8 @@ label.field > input, label.field > select, label.field > textarea { margin-top: 
   line-height: 1.08;
   margin-top: 18px;
 }
-.sets-line { display: flex; flex-wrap: wrap; gap: 6px; margin: 14px 0 0; }
-.sets-line button { min-height: 40px; font-family: var(--mono); font-weight: 400; }
+.sets-line { display: flex; flex-wrap: wrap; gap: var(--space-xs); margin: var(--space-md) 0 0; }
+.sets-line button { min-height: 44px; font-family: var(--mono); font-weight: 400; }
 .spacer { flex: 1; min-height: 12px; }
 
 /* Tela de bloqueio sóbria */
