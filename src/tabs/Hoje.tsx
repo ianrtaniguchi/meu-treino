@@ -29,10 +29,12 @@ export interface TodayModuleDef {
   allowedUids?: string[]
 }
 
+const TODAY_MODULES_CONFIG_VERSION = 2
+
 export const TODAY_MODULES: TodayModuleDef[] = [
   { id: 'treino', title: 'Treino do Dia', icon: 'treino', targetTab: 'treino', defaultActive: true },
   { id: 'dieta', title: 'Dieta e Macros', icon: 'dieta', targetTab: 'dieta', defaultActive: true },
-  { id: 'faculdade', title: 'Faculdade', icon: 'faculdade', targetTab: 'faculdade', defaultActive: true },
+  { id: 'faculdade', title: 'Faculdade', icon: 'faculdade', targetTab: 'faculdade', defaultActive: true, allowedUids: [OWNER_UID] },
   { id: 'onibus', title: 'Próximo Ônibus Favorito', icon: 'onibus', targetTab: 'onibus', defaultActive: true, allowedUids: [OWNER_UID] },
   { id: 'noticias', title: 'Notícias do IFES', icon: 'noticias', targetTab: 'noticias', defaultActive: true, allowedUids: [OWNER_UID] },
   { id: 'agenda', title: 'Agenda Google', icon: 'assistente', targetTab: 'assistente', defaultActive: true, allowedUids: [OWNER_UID] },
@@ -42,6 +44,7 @@ export const TODAY_MODULES: TodayModuleDef[] = [
 export interface TodayModulesConfigRecord {
   enabledMap: Record<string, boolean>
   order: string[]
+  version?: number
 }
 
 const DEFAULT_ENABLED_MAP = TODAY_MODULES.reduce<Record<string, boolean>>((enabledMap, module) => {
@@ -51,29 +54,50 @@ const DEFAULT_ENABLED_MAP = TODAY_MODULES.reduce<Record<string, boolean>>((enabl
 
 const DEFAULT_ORDER = ['treino', 'dieta', 'faculdade', 'onibus', 'noticias', 'agenda', 'push']
 
+export function getAllowedTodayModules(userUid?: string | null): TodayModuleDef[] {
+  return TODAY_MODULES.filter((module) => !module.allowedUids || module.allowedUids.includes(userUid ?? ''))
+}
+
+export function normalizeTodayModulesConfig(
+  saved: TodayModulesConfigRecord | null | undefined,
+  userUid?: string | null,
+): TodayModulesConfigRecord {
+  if (!saved || typeof saved !== 'object') {
+    return { enabledMap: DEFAULT_ENABLED_MAP, order: DEFAULT_ORDER, version: TODAY_MODULES_CONFIG_VERSION }
+  }
+
+  const enabledMap = { ...DEFAULT_ENABLED_MAP, ...(saved.enabledMap ?? {}) }
+  if (userUid === OWNER_UID && saved.version !== TODAY_MODULES_CONFIG_VERSION) {
+    enabledMap.noticias = true
+  }
+  const savedOrder = Array.isArray(saved.order) && saved.order.length > 0 ? saved.order : DEFAULT_ORDER
+  const order = [...savedOrder, ...TODAY_MODULES.map((module) => module.id).filter((id) => !savedOrder.includes(id))]
+  return { enabledMap, order, version: TODAY_MODULES_CONFIG_VERSION }
+}
+
 export function useTodayModulesConfig(): {
   config: TodayModulesConfigRecord
   setEnabled: (id: string, active: boolean) => void
   reorder: (nextOrder: string[]) => void
 } {
   const saved = useSetting<TodayModulesConfigRecord | null>('todayModulesConfig', null)
-  const config = useMemo<TodayModulesConfigRecord>(() => {
-    if (!saved || typeof saved !== 'object') {
-      return { enabledMap: DEFAULT_ENABLED_MAP, order: DEFAULT_ORDER }
+  const syncStatus = useSyncStatus()
+  const userUid = syncStatus.user?.uid
+  const config = useMemo(() => normalizeTodayModulesConfig(saved, userUid), [saved, userUid])
+
+  useEffect(() => {
+    if (saved && typeof saved === 'object' && saved.version !== TODAY_MODULES_CONFIG_VERSION) {
+      void setSetting('todayModulesConfig', config)
     }
-    const enabledMap = { ...DEFAULT_ENABLED_MAP, ...(saved.enabledMap ?? {}) }
-    const savedOrder = Array.isArray(saved.order) && saved.order.length > 0 ? saved.order : DEFAULT_ORDER
-    const order = [...savedOrder, ...TODAY_MODULES.map((module) => module.id).filter((id) => !savedOrder.includes(id))]
-    return { enabledMap, order }
-  }, [saved])
+  }, [config, saved])
 
   const setEnabled = (id: string, active: boolean) => {
     const nextMap = { ...config.enabledMap, [id]: active }
-    void setSetting('todayModulesConfig', { ...config, enabledMap: nextMap })
+    void setSetting('todayModulesConfig', { ...config, version: TODAY_MODULES_CONFIG_VERSION, enabledMap: nextMap })
   }
 
   const reorder = (nextOrder: string[]) => {
-    void setSetting('todayModulesConfig', { ...config, order: nextOrder })
+    void setSetting('todayModulesConfig', { ...config, version: TODAY_MODULES_CONFIG_VERSION, order: nextOrder })
   }
 
   return { config, setEnabled, reorder }
@@ -109,10 +133,7 @@ export default function Hoje({
 
   const todayStr = useMemo(() => today(), [])
   const isOwner = syncStatus.user?.uid === OWNER_UID
-  const allowedModules = useMemo(
-    () => TODAY_MODULES.filter((module) => !module.allowedUids || module.allowedUids.includes(syncStatus.user?.uid ?? '')),
-    [syncStatus.user?.uid],
-  )
+  const allowedModules = useMemo(() => getAllowedTodayModules(syncStatus.user?.uid), [syncStatus.user?.uid])
 
   const todaySession = useLiveQuery(
     async () => await db.sessions.where('date').equals(todayStr).toArray(),

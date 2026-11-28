@@ -194,6 +194,12 @@ export default function App() {
   }
 
   const selectTab = (next: Tab) => {
+    if (
+      (next === 'noticias' || next === 'faculdade') &&
+      syncStatus.user?.uid !== OWNER_UID
+    ) {
+      return
+    }
     if (next === 'dieta' || next === 'corpo') {
       selectFitnessSection(next)
       return
@@ -203,6 +209,11 @@ export default function App() {
     }
     setTab(next)
   }
+
+  useEffect(() => {
+    if (!ready || syncStatus.user?.uid === OWNER_UID) return
+    if (tab === 'noticias' || tab === 'faculdade') setTab('hoje')
+  }, [ready, syncStatus.user?.uid, tab])
 
   const toggleConfigTab = () => {
     if (tab === 'config') {
