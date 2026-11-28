@@ -706,6 +706,33 @@ h3 {
   background: var(--surface); font-size: 10.5px; color: var(--muted);
 }
 
+.faculty-actions, .faculty-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.faculty-actions button, .faculty-row-actions button { min-height: 44px; }
+.faculty-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  min-height: 52px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+.faculty-item:last-child { border-bottom: 0; }
+.faculty-day-heading {
+  margin-top: 8px;
+  color: var(--accent-light);
+  font-family: var(--serif);
+  text-transform: capitalize;
+}
+.faculty-course { border-top: 1px solid var(--border); padding-top: 14px; }
+.faculty-done { opacity: 0.62; }
+
 /* Cards foscos com cantos de 14px e borda ultrafina 1px #1E2430 */
 .card {
   min-width: 0;

@@ -12,6 +12,7 @@ const P: Record<string, ReactNode> = {
   ),
   noticias: <path d="M4 5h13v14a2 2 0 0 0 2 2H6a2 2 0 0 1-2-2V5zm13 4h3v10a2 2 0 0 1-2 2M8 9h5M8 13h5M8 17h3" />,
   onibus: <path d="M5 6a3 3 0 0 1 3-3h8a3 3 0 0 1 3 3v10a2 2 0 0 1-2 2v2h-2v-2H9v2H7v-2a2 2 0 0 1-2-2V6zm0 6h14M8.5 15h.01M15.5 15h.01" />,
+  faculdade: <path d="M3 9.5 12 4l9 5.5-9 5.5-9-5.5zm3.5 2.2V17c3.5 2.5 7.5 2.5 11 0v-5.3M21 10v6" />,
   config: <path d="M4 7h9M17 7h3M4 17h3M11 17h9M15 5v4M9 15v4" />,
   hoje: <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />,
 }
@@ -23,12 +24,24 @@ export type IconName =
   | 'assistente'
   | 'noticias'
   | 'onibus'
+  | 'faculdade'
   | 'config'
   | 'hoje'
 
 export default function Icon({ name }: { name: IconName }) {
   return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
+    <svg
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+      width="100%"
+      height="100%"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      style={{ display: 'block' }}
+    >
       {P[name]}
     </svg>
   )

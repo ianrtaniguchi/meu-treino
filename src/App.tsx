@@ -34,6 +34,7 @@ import Noticias from './tabs/Noticias'
 import Onibus from './tabs/Onibus'
 import Config from './tabs/Config'
 import Hoje from './tabs/Hoje'
+import Faculdade from './tabs/Faculdade'
 import Icon from './components/Icons'
 import FirstLoginPrompt from './components/FirstLoginPrompt'
 import {
@@ -53,8 +54,8 @@ import {
   type IfesNoticia,
 } from './lib/notifications'
 
-type Tab = 'hoje' | 'treino' | 'dieta' | 'corpo' | 'assistente' | 'noticias' | 'onibus' | 'config'
-const ALL_TABS: Tab[] = ['hoje', 'treino', 'dieta', 'corpo', 'assistente', 'noticias', 'onibus', 'config']
+type Tab = 'hoje' | 'treino' | 'dieta' | 'corpo' | 'assistente' | 'noticias' | 'onibus' | 'faculdade' | 'config'
+const ALL_TABS: Tab[] = ['hoje', 'treino', 'dieta', 'corpo', 'assistente', 'noticias', 'onibus', 'faculdade', 'config']
 /**
  * Barra inferior Liquid Glass 100% simétrica com 5 slots iguais (20% cada):
  * - Esquerda: hoje, treino
@@ -77,6 +78,7 @@ const TAB_LABELS: Record<Tab, string> = {
   assistente: 'Assistente',
   noticias: 'Notícias do Ifes',
   onibus: 'Ônibus (Transcol / Ceturb-ES)',
+  faculdade: 'Faculdade',
   config: 'Configurações',
 }
 const FITNESS_SECTION_STORAGE_KEY = 'meu_treino_fitness_section'
@@ -534,6 +536,7 @@ export default function App() {
               />
             )}
             {tab === 'onibus' && <Onibus />}
+            {tab === 'faculdade' && <Faculdade />}
             {tab === 'config' && <Config />}
           </div>
         </main>

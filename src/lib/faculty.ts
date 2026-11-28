@@ -68,6 +68,90 @@ export const EMPTY_FACULTY_DATA: FacultyData = {
   assessments: [],
 }
 
+export const FACULTY_WEEKDAYS = [
+  'domingo',
+  'segunda-feira',
+  'terça-feira',
+  'quarta-feira',
+  'quinta-feira',
+  'sexta-feira',
+  'sábado',
+] as const
+
+export interface NextFacultyClass {
+  facultyClass: FacultyClass
+  course: FacultyCourse
+  startsAt: Date
+}
+
+export function getNextFacultyClass(
+  classes: FacultyClass[],
+  courses: FacultyCourse[],
+  from = new Date(),
+): NextFacultyClass | null {
+  const courseById = new Map(courses.map((course) => [course.id, course]))
+  const candidates = classes.flatMap((facultyClass) => {
+    const course = courseById.get(facultyClass.courseId)
+    const match = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(facultyClass.startTime)
+    if (!course || !match || facultyClass.dayOfWeek < 0 || facultyClass.dayOfWeek > 6) return []
+
+    const startsAt = new Date(from)
+    const daysUntil = (facultyClass.dayOfWeek - from.getDay() + 7) % 7
+    startsAt.setDate(from.getDate() + daysUntil)
+    startsAt.setHours(Number(match[1]), Number(match[2]), 0, 0)
+    if (startsAt <= from) startsAt.setDate(startsAt.getDate() + 7)
+    return [{ facultyClass, course, startsAt }]
+  })
+
+  candidates.sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime())
+  return candidates[0] ?? null
+}
+
+export interface NextFacultyDeadline {
+  deadline: FacultyDeadline
+  course: FacultyCourse
+  dueAt: Date
+}
+
+export function getNextFacultyDeadline(
+  deadlines: FacultyDeadline[],
+  courses: FacultyCourse[],
+  from = new Date(),
+): NextFacultyDeadline | null {
+  const courseById = new Map(courses.map((course) => [course.id, course]))
+  const candidates = deadlines.flatMap((deadline) => {
+    const course = courseById.get(deadline.courseId)
+    const dueAt = new Date(`${deadline.date}T${deadline.time}:00`)
+    if (deadline.status !== 'pendente' || !course || Number.isNaN(dueAt.getTime()) || dueAt < from) return []
+    return [{ deadline, course, dueAt }]
+  })
+
+  candidates.sort((a, b) => a.dueAt.getTime() - b.dueAt.getTime())
+  return candidates[0] ?? null
+}
+
+export interface FacultyCourseMargin {
+  course: FacultyCourse
+  margin: number
+  progress: FacultyGradeProgress
+}
+
+export function getLowestFacultyCourseMargin(
+  courses: FacultyCourse[],
+  assessments: FacultyAssessment[],
+): FacultyCourseMargin | null {
+  const candidates = courses.flatMap((course) => {
+    const progress = calculateFacultyGradeProgress(
+      assessments.filter((assessment) => assessment.courseId === course.id),
+      course.passingAverage,
+    )
+    if (progress.currentAverage === null) return []
+    return [{ course, progress, margin: progress.currentAverage - course.passingAverage }]
+  })
+  candidates.sort((a, b) => a.margin - b.margin)
+  return candidates[0] ?? null
+}
+
 export function calculateFacultyGradeProgress(
   assessments: FacultyAssessment[],
   passingAverage: number,
