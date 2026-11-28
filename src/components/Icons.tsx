@@ -25,6 +25,32 @@ const P: Record<string, ReactNode> = {
   hoje: <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />,
   image: <path d="M4 5h16v14H4zM4 15l4-4 4 4 3-3 5 5M15.5 9h.01" />,
   camera: <path d="M4 7h3l1.5-2h7L17 7h3v12H4zM12 10a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7z" />,
+  plus: <path d="M12 5v14M5 12h14" />,
+  mic: (
+    <>
+      <rect x="9" y="3" width="6" height="12" rx="3" />
+      <path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3M9 21h6" />
+    </>
+  ),
+  send: <path d="M12 19V5m-6 6 6-6 6 6" />,
+  trash: (
+    <>
+      <path d="M4 7h16M9 7V4h6v3M7 7l1 14h8l1-14M10 11v6M14 11v6" />
+    </>
+  ),
+  close: <path d="M6 6l12 12M18 6 6 18" />,
+  video: (
+    <>
+      <rect x="3" y="6" width="13" height="12" rx="2" />
+      <path d="m16 10 5-3v10l-5-3z" />
+    </>
+  ),
+  theme: (
+    <>
+      <circle cx="12" cy="12" r="4" />
+      <path d="M12 2v3m0 14v3M2 12h3m14 0h3M5 5l2 2m10 10 2 2m0-14-2 2M7 17l-2 2" />
+    </>
+  ),
 }
 
 export type IconName =
@@ -41,6 +67,13 @@ export type IconName =
   | 'hoje'
   | 'image'
   | 'camera'
+  | 'plus'
+  | 'mic'
+  | 'send'
+  | 'trash'
+  | 'close'
+  | 'video'
+  | 'theme'
 
 export default function Icon({ name }: { name: IconName }) {
   return (

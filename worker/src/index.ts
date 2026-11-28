@@ -1419,7 +1419,12 @@ async function generateAssistantSuggestions(
       .format(new Date(nowMs))
       .replace(/\D/g, ''),
   )
-  const cacheKey = `${uid}:${formatSaoPauloDayKey(nowMs)}:${Math.floor((hour % 24) / 4)}`
+  const contextKey = JSON.stringify(context).slice(0, 500)
+  let contextHash = 0
+  for (let i = 0; i < contextKey.length; i += 1) {
+    contextHash = ((contextHash << 5) - contextHash + contextKey.charCodeAt(i)) | 0
+  }
+  const cacheKey = `${uid}:${formatSaoPauloDayKey(nowMs)}:${Math.floor((hour % 24) / 4)}:${contextHash}`
   const cached = memorySuggestionCache.get(cacheKey)
   if (cached && cached.expiresAt > nowMs) return { status: 200, body: { suggestions: cached.suggestions } }
 
@@ -1434,7 +1439,7 @@ async function generateAssistantSuggestions(
         messages: [
           {
             role: 'user',
-            content: `Gere 3 sugestões curtas em português do Brasil para iniciar uma conversa útil no app de treino. Use somente este contexto agregado, não peça nem revele dados pessoais: ${JSON.stringify(context)}. Não invente registros. Responda JSON: {"suggestions":["...","...","..."]}.`,
+            content: `Gere exatamente 4 sugestões curtas em português do Brasil para o usuário falar no app de treino. Use somente este contexto agregado, não peça nem revele dados pessoais: ${JSON.stringify(context)}. Escreva como se o usuário estivesse falando, máximo de 40 caracteres por sugestão, sem explicações. Não invente registros. Responda somente JSON: {"suggestions":["...","...","...","..."]}.`,
           },
         ],
         response_format: { type: 'json_object' },

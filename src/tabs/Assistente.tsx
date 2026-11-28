@@ -23,8 +23,13 @@ import {
   type MealDraft,
   type PushReminderCardItem,
 } from '../lib/assistant'
-import { analyzeAssistantPhoto, fetchAssistantSuggestions } from '../lib/assistantMedia'
+import {
+  analyzeAssistantPhoto,
+  extractVideoFrames,
+  fetchAssistantSuggestions,
+} from '../lib/assistantMedia'
 import Icon from '../components/Icons'
+import { useTheme } from '../lib/theme'
 import {
   startAudioRecording,
   transcribeAudioClip,
@@ -44,8 +49,38 @@ const QUICK_PROMPTS = [
   'Como está a evolução do meu peso nos últimos 30 dias?',
 ]
 
+function fallbackSuggestions(now = new Date(), workoutLogged = false, _mealsLogged = 0): string[] {
+  const hour = now.getHours()
+  if (hour < 10) return ['Qual treino faço hoje?', 'Registrar meu café', 'Criar lembrete de água', 'Como está meu peso?']
+  if (hour < 15) return ['Registrar meu almoço', 'Quanto falta de proteína hoje?', workoutLogged ? 'Como foi meu treino hoje?' : 'Qual treino faço hoje?', 'Criar lembrete de água']
+  if (hour < 18) return ['Registrar meu lanche', 'Quanto falta de proteína hoje?', workoutLogged ? 'Revisar meu treino' : 'Qual treino faço hoje?', 'Criar lembrete de treino']
+  return ['Registrar meu jantar', workoutLogged ? 'Como foi meu treino hoje?' : 'Qual treino faço hoje?', 'Quanto falta de proteína hoje?', 'Criar lembrete de amanhã']
+}
+
+function AssistantMarkdown({ content }: { content: string }) {
+  const lines = content.split(/\r?\n/)
+  return (
+    <div className="assistant-markdown">
+      {lines.map((line, index) => {
+        const isList = /^\s*[-*]\s+/.test(line)
+        const clean = isList ? line.replace(/^\s*[-*]\s+/, '') : line
+        const parts = clean.split(/(\*\*[^*]+\*\*)/g)
+        const rendered = parts.map((part, partIndex) =>
+          part.startsWith('**') && part.endsWith('**')
+            ? <strong key={partIndex}>{part.slice(2, -2)}</strong>
+            : part,
+        )
+        if (isList) return <div className="assistant-markdown-list" key={index}><span>•</span><span>{rendered}</span></div>
+        if (!clean) return <div className="assistant-markdown-break" key={index} />
+        return <div key={index}>{rendered}</div>
+      })}
+    </div>
+  )
+}
+
 export default function Assistente() {
   const { toast, confirm } = useUi()
+  const [theme, applyTheme] = useTheme()
   const { onNavigateTab } = useContext(ChromeNavContext)
   const syncStatus = useSyncStatus()
   const activeUid = syncStatus.user?.uid ?? null
@@ -59,9 +94,12 @@ export default function Assistente() {
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
   const [suggestions, setSuggestions] = useState<string[]>(QUICK_PROMPTS)
-  const [suggestionError, setSuggestionError] = useState('')
   const [selectedPhoto, setSelectedPhoto] = useState<File | null>(null)
   const [photoPreview, setPhotoPreview] = useState<string | null>(null)
+  const [selectedVideo, setSelectedVideo] = useState<File | null>(null)
+  const [videoPreview, setVideoPreview] = useState<string | null>(null)
+  const [videoFrames, setVideoFrames] = useState<Blob[]>([])
+  const [mediaMenuOpen, setMediaMenuOpen] = useState(false)
   const [online, setOnline] = useState<boolean>(
     typeof navigator !== 'undefined' ? navigator.onLine !== false : true,
   )
@@ -69,6 +107,8 @@ export default function Assistente() {
   const [recordSec, setRecordSec] = useState(0)
   const recorderRef = useRef<ActiveAudioRecorder | null>(null)
   const photoInputRef = useRef<HTMLInputElement | null>(null)
+  const galleryInputRef = useRef<HTMLInputElement | null>(null)
+  const videoInputRef = useRef<HTMLInputElement | null>(null)
   const chatBottomRef = useRef<HTMLDivElement | null>(null)
   const didInitialScrollRef = useRef<boolean>(false)
 
@@ -97,10 +137,26 @@ export default function Assistente() {
     const vv = typeof window !== 'undefined' ? window.visualViewport : null
     if (!vv) return
     const onViewportResize = () => {
+      const keyboardOffset = Math.max(
+        0,
+        window.innerHeight - vv.height - vv.offsetTop,
+      )
+      document.documentElement.style.setProperty(
+        '--assistant-composer-bottom',
+        keyboardOffset > 40
+          ? `${keyboardOffset + 8}px`
+          : `calc(8px + var(--tabbar-h) + var(--sab))`,
+      )
       scrollToChatBottom('smooth')
     }
+    onViewportResize()
     vv.addEventListener('resize', onViewportResize)
-    return () => vv.removeEventListener('resize', onViewportResize)
+    vv.addEventListener('scroll', onViewportResize)
+    return () => {
+      vv.removeEventListener('resize', onViewportResize)
+      vv.removeEventListener('scroll', onViewportResize)
+      document.documentElement.style.removeProperty('--assistant-composer-bottom')
+    }
   }, [])
 
   useEffect(() => {
@@ -139,33 +195,63 @@ export default function Assistente() {
   }, [photoPreview])
 
   useEffect(() => {
+    if (!videoPreview) return
+    return () => URL.revokeObjectURL(videoPreview)
+  }, [videoPreview])
+
+  useEffect(() => {
     if (!activeUid || !canUse) {
-      setSuggestions(QUICK_PROMPTS)
-      setSuggestionError('')
+      setSuggestions(fallbackSuggestions())
       return
     }
     let active = true
-    setSuggestionError('')
-    void fetchAssistantSuggestions(activeUid)
+    setSuggestions([])
+    void fetchAssistantSuggestions(activeUid, {
+      lastMessages: history.slice(-4).map((message) => ({
+        role: message.role,
+        content: message.content,
+      })),
+    })
       .then((items) => {
         if (active) setSuggestions(items)
       })
-      .catch((error: unknown) => {
+      .catch(() => {
         if (!active) return
-        setSuggestions(QUICK_PROMPTS)
-        setSuggestionError(error instanceof Error ? error.message : 'Sugestões locais enquanto a IA está indisponível.')
+        setSuggestions(fallbackSuggestions())
       })
     return () => {
       active = false
     }
-  }, [activeUid, canUse])
+  }, [activeUid, canUse, history.length, busy])
 
   const handlePhotoSelection = (file?: File) => {
     if (!file) return
+    setSelectedVideo(null)
+    setVideoPreview(null)
     setSelectedPhoto(file)
     setPhotoPreview(URL.createObjectURL(file))
     setErr('')
     if (photoInputRef.current) photoInputRef.current.value = ''
+  }
+
+  const handleVideoSelection = async (file?: File) => {
+    if (!file) return
+    setMediaMenuOpen(false)
+    setErr('')
+    setSelectedPhoto(null)
+    setPhotoPreview(null)
+    try {
+      const frames = await extractVideoFrames(file)
+      setSelectedVideo(file)
+      setVideoFrames(frames)
+      setVideoPreview(URL.createObjectURL(frames[0]))
+      if (videoInputRef.current) videoInputRef.current.value = ''
+    } catch (error) {
+      setSelectedVideo(null)
+      setVideoPreview(null)
+      const message = error instanceof Error ? error.message : 'Não consegui processar o vídeo.'
+      setErr(message.startsWith('error:') ? message : `error: ${message}`)
+    }
   }
 
   const handleSendPhoto = async () => {
@@ -239,6 +325,75 @@ export default function Assistente() {
       setPhotoPreview(null)
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Falha ao analisar a foto.'
+      setErr(message.startsWith('error:') ? message : `error: ${message}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const handleSendVideo = async () => {
+    if (!selectedVideo || videoFrames.length === 0 || !canUse || busy || !activeUid) return
+    const text = input.trim()
+    setErr('')
+    setBusy(true)
+    try {
+      const images = await Promise.all(videoFrames.map((frame) => {
+        const url = URL.createObjectURL(frame)
+        return new Promise<HTMLImageElement>((resolve, reject) => {
+          const img = new Image()
+          img.onload = () => resolve(img)
+          img.onerror = () => reject(new Error('Não consegui preparar os frames do vídeo.'))
+          img.src = url
+        }).finally(() => URL.revokeObjectURL(url))
+      }))
+      const columns = images.length <= 2 ? images.length : 2
+      const rows = Math.ceil(images.length / columns)
+      const cellWidth = 480
+      const cellHeight = 270
+      const canvas = document.createElement('canvas')
+      canvas.width = cellWidth * columns
+      canvas.height = cellHeight * rows
+      const ctx = canvas.getContext('2d')
+      if (!ctx) throw new Error('Não consegui montar os frames do vídeo.')
+      ctx.fillStyle = '#ffffff'
+      ctx.fillRect(0, 0, canvas.width, canvas.height)
+      images.forEach((img, index) => {
+        const x = (index % columns) * cellWidth
+        const y = Math.floor(index / columns) * cellHeight
+        const scale = Math.min(cellWidth / img.naturalWidth, cellHeight / img.naturalHeight)
+        const width = img.naturalWidth * scale
+        const height = img.naturalHeight * scale
+        ctx.drawImage(img, x + (cellWidth - width) / 2, y + (cellHeight - height) / 2, width, height)
+      })
+      const collageBlob = await new Promise<Blob | null>((resolve) =>
+        canvas.toBlob(resolve, 'image/jpeg', 0.78),
+      )
+      if (!collageBlob) throw new Error('Não consegui preparar o vídeo para análise.')
+      const collage = new File([collageBlob], 'video-frames.jpg', { type: 'image/jpeg' })
+      const analysis = await analyzeAssistantPhoto(
+        collage,
+        text || 'Analise estes frames extraídos de um vídeo.',
+      )
+      const userMessage: ChatTurnMessage = {
+        id: `u-${Date.now()}`,
+        role: 'user',
+        content: text || 'Vídeo enviado para análise.',
+        createdAt: Date.now(),
+      }
+      const assistantMessage: ChatTurnMessage = {
+        id: uid(),
+        role: 'assistant',
+        content: analysis.message || 'Analisei os frames do vídeo.',
+        createdAt: Date.now(),
+        dataSent: ['3–5 frames do vídeo processados temporariamente'],
+      }
+      await saveAssistantHistory([...history, userMessage, assistantMessage], activeUid)
+      setInput('')
+      setSelectedVideo(null)
+      setVideoPreview(null)
+      setVideoFrames([])
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Falha ao analisar o vídeo.'
       setErr(message.startsWith('error:') ? message : `error: ${message}`)
     } finally {
       setBusy(false)
@@ -451,85 +606,53 @@ export default function Assistente() {
         path="~/assistente"
         rightSlot={
           <div className="assistant-header-actions">
+            {history.length > 0 && (
+              <button
+                type="button"
+                className="assistant-icon-button"
+                disabled={busy}
+                onClick={() => void handleClear()}
+                aria-label="Limpar conversa"
+                title="Nova conversa"
+              >
+                <Icon name="close" />
+              </button>
+            )}
             <button
               type="button"
-              className="small ghost assistant-config-button"
+              className="assistant-icon-button"
+              onClick={() => applyTheme(theme === 'dark' ? 'light' : theme === 'light' ? 'baby' : 'dark')}
+              aria-label="Alterar tema"
+              title="Tema"
+            >
+              <Icon name="theme" />
+            </button>
+            <button
+              type="button"
+              className="assistant-icon-button"
               onClick={() => onNavigateTab?.('config')}
               aria-label="Abrir configurações"
               title="Configurações"
             >
               <Icon name="settings" />
             </button>
-            {history.length > 0 && (
-              <button className="small" disabled={busy} onClick={() => void handleClear()}>
-                limpar
-              </button>
-            )}
           </div>
         }
       />
-
-      {!syncStatus.user && (
-        <div className="card" style={{ borderColor: 'var(--amber)' }}>
-          <div className="amber small">
-            Entre na conta em <b>Configurações</b> para usar o assistente.
-          </div>
-        </div>
-      )}
-
-      {syncStatus.user && !online && (
-        <div className="card" style={{ borderColor: 'var(--amber)' }}>
-          <div className="amber small">Offline · conecte-se para enviar mensagens.</div>
-        </div>
-      )}
-
-      <div className="card assistant-suggestions">
-        <div className="muted small">Sugestões para começar</div>
-        <div className="chips">
-          {suggestions.map((q) => (
-            <button
-              key={q}
-              className="small ai"
-              disabled={!canUse || busy}
-              onClick={() => void handleSend(q)}
-            >
-              {q}
-            </button>
-          ))}
-        </div>
-        {suggestionError && <div className="muted small">{suggestionError} · atalhos locais disponíveis.</div>}
-      </div>
-
-      {history.length === 0 ? (
-        <div className="card muted small">
-          Sem mensagens. Escolha um atalho acima ou envie abaixo.
-        </div>
-      ) : (
-        <div className="stack">
+      <div className="assistant-page">
+        <div className="assistant-messages" role="log" aria-live="polite">
+          {history.length === 0 && (
+            <div className="assistant-empty">Como posso ajudar hoje?</div>
+          )}
           {history.map((m) => (
-            <div
-              key={m.id}
-              className="card stack"
-              style={{
-                borderColor: m.role === 'user' ? 'var(--border)' : 'var(--btn-primary-border)',
-              }}
-            >
-              <div className="row between">
-                <b className={m.role === 'user' ? 'muted small' : 'green small'}>
-                  {m.role === 'user' ? 'Você' : 'Assistente'}
-                </b>
-                <span className="muted small" style={{ fontFamily: 'var(--mono)' }}>
-                  {new Date(m.createdAt).toLocaleTimeString('pt-BR', {
-                    hour: '2-digit',
-                    minute: '2-digit',
-                  })}
-                </span>
-              </div>
-
-              <div style={{ whiteSpace: 'pre-wrap', lineHeight: 1.45 }}>{m.content}</div>
-
-              {m.drafts &&
-                m.drafts.map((d) => (
+            <div key={m.id} className={`assistant-message-row ${m.role}`}>
+              <div className={`assistant-bubble ${m.role}`}>
+                {m.role === 'assistant' ? (
+                  <AssistantMarkdown content={m.content} />
+                ) : (
+                  <div>{m.content}</div>
+                )}
+                {m.drafts && m.drafts.map((d) => (
                   <DraftCard
                     key={d.id}
                     draft={d}
@@ -537,194 +660,180 @@ export default function Assistente() {
                     onDiscard={() => void handleDiscardDraft(m.id, d.id)}
                     onOpenSection={
                       onNavigateTab
-                        ? () =>
-                            onNavigateTab(
-                              d.kind === 'event'
-                                ? 'assistente'
-                                : d.kind === 'expense'
-                                ? 'gastos'
-                                : d.kind === 'meal'
-                                  ? 'dieta'
-                                  : d.kind === 'body'
-                                    ? 'corpo'
-                                    : 'treino',
-                            )
+                        ? () => onNavigateTab(
+                            d.kind === 'event' ? 'assistente' : d.kind === 'expense' ? 'gastos' : d.kind === 'meal' ? 'dieta' : d.kind === 'body' ? 'corpo' : 'treino',
+                          )
                         : undefined
                     }
                   />
                 ))}
-
-              {m.calendarCards &&
-                m.calendarCards.map((c) => (
-                  <CalendarEventCard
-                    key={c.id}
-                    card={c}
-                    onConfirm={() => void handleConfirmCalendarCard(m.id, c)}
-                  />
+                {m.calendarCards?.map((c) => (
+                  <CalendarEventCard key={c.id} card={c} onConfirm={() => void handleConfirmCalendarCard(m.id, c)} />
                 ))}
-
-              {m.reminderCards &&
-                m.reminderCards.map((rc) => (
-                  <PushReminderCard
-                    key={rc.id}
-                    card={rc}
-                    onCancel={() => void handleCancelReminderCard(m.id, rc)}
-                  />
+                {m.reminderCards?.map((rc) => (
+                  <PushReminderCard key={rc.id} card={rc} onCancel={() => void handleCancelReminderCard(m.id, rc)} />
                 ))}
-
-              {m.role === 'assistant' && m.dataSent && m.dataSent.length > 0 && (
-                <div
-                  className="muted small"
-                  style={{
-                    borderTop: '1px solid var(--border)',
-                    paddingTop: 6,
-                    fontSize: 11,
-                  }}
-                >
-                  contexto: {m.dataSent.join(' · ')}
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-
-      {err && (
-        <div className="card" style={{ borderColor: 'var(--red)' }}>
-          <div className="small red">{err}</div>
-        </div>
-      )}
-
-      <div className="card stack" style={{ marginTop: 10 }}>
-        <input
-          ref={photoInputRef}
-          type="file"
-          accept="image/*"
-          hidden
-          style={{ display: 'none' }}
-          onChange={(event) => handlePhotoSelection(event.target.files?.[0])}
-        />
-        {selectedPhoto && photoPreview && (
-          <div className="assistant-photo-preview">
-            <img src={photoPreview} alt="Prévia da foto anexada" />
-            <div className="stack grow" style={{ gap: 6 }}>
-              <b className="small">Foto pronta para analisar</b>
-              <span className="muted small">A imagem é processada temporariamente e não é salva no histórico.</span>
-              <div className="row">
-                <button
-                  type="button"
-                  className="primary small"
-                  style={{ minHeight: 44 }}
-                  disabled={!canUse || busy}
-                  onClick={() => void handleSendPhoto()}
-                >
-                  {busy ? 'analisando…' : 'analisar foto'}
-                </button>
-                <button
-                  type="button"
-                  className="small ghost"
-                  style={{ minHeight: 44 }}
-                  disabled={busy}
-                  onClick={() => {
-                    setSelectedPhoto(null)
-                    setPhotoPreview(null)
-                  }}
-                  aria-label="Remover foto anexada"
-                >
-                  remover
-                </button>
               </div>
             </div>
-          </div>
-        )}
-        <textarea
-          rows={2}
-          value={input}
-          disabled={!canUse || busy || voiceState !== 'idle'}
-          onChange={(e) => setInput(e.target.value)}
-          onFocus={() => scrollToChatBottom('smooth')}
-          aria-label="Mensagem para o assistente"
-          placeholder={
-            canUse
-              ? 'Pergunte sobre treinos, dieta ou crie um lembrete…'
-              : 'Entre na conta em Configurações para usar o assistente'
-          }
-        />
-
-        {voiceState === 'recording' && (
-          <div
-            className="card stack small"
-            style={{ background: 'var(--bg)', borderColor: 'var(--amber)', marginBottom: 0 }}
-          >
-            <div className="row between">
-              <b className="amber">● gravando · {fmtRecTimer(recordSec)}</b>
-              <span className="muted small">whisper</span>
+          ))}
+          {busy && (
+            <div className="assistant-message-row assistant">
+              <div className="assistant-typing" aria-label="O assistente está digitando">
+                <span /><span /><span />
+              </div>
             </div>
-            <div className="grid2">
-              <button
-                className="primary small"
-                onClick={() => void handleStopAndTranscribe(true)}
-              >
-                transcrever e enviar
+          )}
+          <div ref={chatBottomRef} aria-hidden="true" />
+        </div>
+
+        {(!syncStatus.user || (syncStatus.user && !online) || err) && (
+          <div className="assistant-status">
+            {!syncStatus.user && 'Entre em Configurações para usar o assistente.'}
+            {syncStatus.user && !online && 'Offline · conecte-se para enviar mensagens.'}
+            {err && <span className="assistant-error">{err}</span>}
+          </div>
+        )}
+
+        <div className="assistant-composer-wrap">
+          <div className="assistant-suggestions" aria-label="Sugestões">
+            {suggestions.length === 0
+              ? [0, 1, 2].map((index) => <span className="assistant-chip-skeleton" key={index} />)
+              : suggestions.map((q) => (
+                  <button
+                    key={q}
+                    type="button"
+                    className="assistant-chip"
+                    disabled={!canUse || busy}
+                    onClick={() => void handleSend(q)}
+                  >
+                    {q}
+                  </button>
+                ))}
+          </div>
+
+          {mediaMenuOpen && (
+            <div className="assistant-media-menu" role="menu">
+              <button type="button" role="menuitem" onClick={() => {
+                setMediaMenuOpen(false)
+                photoInputRef.current?.click()
+              }}>
+                <Icon name="camera" /> Tirar foto
               </button>
-              <button
-                className="ai small"
-                onClick={() => void handleStopAndTranscribe(false)}
-              >
-                só transcrever
+              <button type="button" role="menuitem" onClick={() => {
+                setMediaMenuOpen(false)
+                galleryInputRef.current?.click()
+              }}>
+                <Icon name="image" /> Escolher da galeria
+              </button>
+              <button type="button" role="menuitem" onClick={() => {
+                setMediaMenuOpen(false)
+                videoInputRef.current?.click()
+              }}>
+                <Icon name="video" /> Vídeo
               </button>
             </div>
-            <button className="small danger block" onClick={handleCancelVoice}>
-              cancelar
-            </button>
-          </div>
-        )}
+          )}
 
-        {voiceState === 'transcribing' && (
-          <div
-            className="card small"
-            style={{ background: 'var(--bg)', borderColor: 'var(--green)', marginBottom: 0 }}
-          >
-            <span className="green">&gt; transcrevendo áudio…</span>
-          </div>
-        )}
+          <input ref={photoInputRef} type="file" accept="image/*" capture="environment" hidden onChange={(event) => handlePhotoSelection(event.target.files?.[0])} />
+          <input ref={galleryInputRef} type="file" accept="image/*" hidden onChange={(event) => handlePhotoSelection(event.target.files?.[0])} />
+          <input ref={videoInputRef} type="file" accept="video/*" hidden onChange={(event) => void handleVideoSelection(event.target.files?.[0])} />
 
-        {voiceState === 'idle' && (
-          <div className="grid2">
-            <button
-              className="primary"
-              disabled={!canUse || busy || !input.trim()}
-              onClick={() => void handleSend()}
-            >
-              {busy ? 'respondendo…' : 'enviar'}
-            </button>
-            <button
-              className="ai"
-              disabled={!canUse || busy}
-              onClick={() => void handleStartVoice()}
-              aria-label="gravar áudio por voz"
-            >
-              gravar voz
-            </button>
+          <div className="assistant-composer">
+            {(selectedPhoto || selectedVideo) && (
+              <div className="assistant-attachments">
+                <div className="assistant-attachment">
+                  <img src={selectedPhoto ? photoPreview ?? undefined : videoPreview ?? undefined} alt={selectedPhoto ? 'Foto anexada' : 'Vídeo anexado'} />
+                  <button
+                    type="button"
+                    aria-label="Remover anexo"
+                    onClick={() => {
+                      setSelectedPhoto(null)
+                      setPhotoPreview(null)
+                      setSelectedVideo(null)
+                      setVideoPreview(null)
+                      setVideoFrames([])
+                    }}
+                  >
+                    <Icon name="close" />
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {voiceState === 'recording' ? (
+              <div className="assistant-recording">
+                <button type="button" aria-label="Cancelar gravação" onClick={handleCancelVoice}>
+                  <Icon name="trash" />
+                </button>
+                <div className="assistant-wave" aria-hidden="true"><span /><span /><span /><span /><span /></div>
+                <span className="assistant-record-time">{fmtRecTimer(recordSec)}</span>
+                <button
+                  type="button"
+                  className="assistant-send-button"
+                  aria-label="Enviar áudio"
+                  onClick={() => void handleStopAndTranscribe(true)}
+                >
+                  <Icon name="send" />
+                </button>
+              </div>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  className="assistant-add-button"
+                  aria-label="Adicionar anexo"
+                  aria-expanded={mediaMenuOpen}
+                  disabled={!canUse || busy}
+                  onClick={() => setMediaMenuOpen((open) => !open)}
+                >
+                  <Icon name="plus" />
+                </button>
+                <textarea
+                  rows={1}
+                  value={input}
+                  disabled={!canUse || busy || voiceState === 'transcribing'}
+                  onChange={(event) => {
+                    setInput(event.target.value)
+                    event.target.style.height = '24px'
+                    event.target.style.height = `${Math.min(event.target.scrollHeight, 120)}px`
+                  }}
+                  onFocus={() => scrollToChatBottom('smooth')}
+                  aria-label="Mensagem para o assistente"
+                  placeholder="Pergunte sobre treinos, dieta ou crie um lembrete…"
+                />
+                {input.trim() || selectedPhoto || selectedVideo ? (
+                  <button
+                    type="button"
+                    className="assistant-send-button"
+                    aria-label="Enviar mensagem"
+                    disabled={!canUse || busy}
+                    onClick={() => {
+                      if (selectedPhoto) void handleSendPhoto()
+                      else if (selectedVideo) void handleSendVideo()
+                      else void handleSend()
+                    }}
+                  >
+                    <Icon name="send" />
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="assistant-mic-button"
+                    aria-label="Gravar áudio"
+                    disabled={!canUse || busy}
+                    onClick={() => void handleStartVoice()}
+                  >
+                    <Icon name="mic" />
+                  </button>
+                )}
+              </>
+            )}
           </div>
-        )}
-        {voiceState === 'idle' && (
-          <div className="row assistant-media-actions">
-            <button
-              type="button"
-              className="small ghost"
-              style={{ minHeight: 44 }}
-              disabled={!canUse || busy}
-              onClick={() => photoInputRef.current?.click()}
-              aria-label="Adicionar foto da galeria ou câmera"
-            >
-              <span className="assistant-media-icon"><Icon name="image" /></span>
-              adicionar foto
-            </button>
-          </div>
-        )}
+          {voiceState === 'transcribing' && (
+            <div className="assistant-transcribing">Transcrevendo áudio…</div>
+          )}
+        </div>
       </div>
-      <div ref={chatBottomRef} aria-hidden="true" style={{ height: 2 }} />
     </>
   )
 }
