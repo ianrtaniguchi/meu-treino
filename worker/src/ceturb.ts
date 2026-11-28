@@ -14,6 +14,23 @@
 
 export const CETURB_ONIBUS_BASE_URL = 'https://api.onibus.ceturb.es.gov.br'
 export const CETURB_PARTIDAS_BASE_URL = 'https://api.partidas.ceturb.es.gov.br'
+export const GEOCONTROL_BASE_URL =
+  'https://gvbus-previsao.geocontrol.com.br/pontual-previsao/Previsao'
+
+export const GEOCONTROL_ENDPOINTS = [
+  'pesquisarPontosDeParada',
+  'listarPontosDeParada',
+  'obterEstimativasPorOrigem',
+  'listarItinerarios',
+  'getItinerario',
+  'obterUltimaPosicaoDoVeiculo',
+] as const
+
+export type GeocontrolEndpoint = (typeof GEOCONTROL_ENDPOINTS)[number]
+
+export function isAllowedGeocontrolEndpoint(endpoint: string): endpoint is GeocontrolEndpoint {
+  return (GEOCONTROL_ENDPOINTS as readonly string[]).includes(endpoint)
+}
 
 const LINES_CACHE_TTL_MS = 6 * 60 * 60_000 // 6 horas
 const SCHEDULES_CACHE_TTL_MS = 60 * 60_000 // 1 hora
@@ -474,4 +491,86 @@ export async function handleCeturbProxyRequest(
   }
 
   return respond(404, { error: 'error: rota Ceturb não encontrada.' }, 0)
+}
+
+export async function handleGeocontrolProxyRequest(
+  url: URL,
+  request: Request,
+  corsHeaders: Record<string, string>,
+  deps: { fetcher?: typeof fetch } = {},
+): Promise<Response> {
+  const rawEndpoint = url.pathname.match(/^\/geocontrol\/([^/]+)$/)?.[1]
+  if (!rawEndpoint) {
+    return new Response(JSON.stringify({ error: 'Endpoint Geocontrol ausente ou inválido.' }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json; charset=utf-8', ...corsHeaders },
+    })
+  }
+
+  let endpoint: string
+  try {
+    endpoint = decodeURIComponent(rawEndpoint)
+  } catch {
+    return new Response(JSON.stringify({ error: 'Endpoint Geocontrol inválido.' }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json; charset=utf-8', ...corsHeaders },
+    })
+  }
+
+  const noStore = endpoint === 'obterEstimativasPorOrigem' || endpoint === 'obterUltimaPosicaoDoVeiculo'
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Authorization, Content-Type',
+    Vary: 'Origin',
+    ...corsHeaders,
+  }
+  if (noStore) headers['Cache-Control'] = 'no-store'
+
+  const respond = (status: number, body: unknown): Response =>
+    new Response(JSON.stringify(body), { status, headers })
+
+  if (!isAllowedGeocontrolEndpoint(endpoint)) {
+    return respond(403, { error: 'Endpoint Geocontrol não autorizado.' })
+  }
+  if (request.method === 'OPTIONS') {
+    return new Response(null, { status: 204, headers })
+  }
+  if (request.method !== 'POST') {
+    return respond(405, { error: 'Método não permitido nas rotas /geocontrol/* (use POST).' })
+  }
+
+  let body: string
+  try {
+    body = await request.text()
+    if (body.trim()) JSON.parse(body)
+    else body = '{}'
+  } catch {
+    return respond(400, { error: 'O corpo da requisição deve ser um JSON válido.' })
+  }
+
+  try {
+    const upstream = await (deps.fetcher ?? fetch)(
+      `${GEOCONTROL_BASE_URL}/${encodeURIComponent(endpoint)}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body,
+      },
+    )
+    const responseBody = await upstream.text()
+    const bodyForResponse =
+      upstream.status === 204 || upstream.status === 205 || upstream.status === 304
+        ? null
+        : responseBody || null
+    return new Response(bodyForResponse, {
+      status: upstream.status,
+      headers: {
+        ...headers,
+        'Content-Type': upstream.headers.get('Content-Type') ?? 'application/json; charset=utf-8',
+      },
+    })
+  } catch {
+    return respond(502, { error: 'Falha ao consultar o serviço Geocontrol.' })
+  }
 }
