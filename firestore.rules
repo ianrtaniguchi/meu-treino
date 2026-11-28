@@ -103,5 +103,12 @@ service cloud.firestore {
       allow read: if isAuthenticated();
       allow write: if false;
     }
+
+    // ---------------------------------------------------------------
+    // Cotas de uso (usageQuotas): acesso exclusivo pelo Worker (Service Account)
+    // ---------------------------------------------------------------
+    match /usageQuotas/{quotaId} {
+      allow read, write: if false;
+    }
   }
 }
