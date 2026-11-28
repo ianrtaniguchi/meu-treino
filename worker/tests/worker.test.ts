@@ -13,6 +13,7 @@ import {
   isValidGroqApiKey,
   listar_eventos,
   normalizeAudioFilename,
+  parseFacultyScheduleContent,
   resetWorkerCachesForTest,
   type Env,
   type JsonWebKeyWithKid,
@@ -405,6 +406,19 @@ describe('Cloudflare Worker Proxy (/chat)', () => {
     expect(resPhoto11.status).toBe(429)
     const errPhoto = (await resPhoto11.json()) as { error: string }
     expect(errPhoto.error).toContain('10/dia')
+
+    const facultyPhotoReq = new Request('https://worker.example.com/analyze-faculty-schedule', {
+      method: 'POST',
+      headers: {
+        Origin: ALLOWED_ORIGIN,
+        Authorization: `Bearer ${secToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ image: 'data:image/jpeg;base64,AAAA' }),
+    })
+    const facultyPhotoRes = await handleRequest(facultyPhotoReq, env, { fetcher, nowMs })
+    expect(facultyPhotoRes.status).toBe(429)
+    expect((await facultyPhotoRes.json()).error).toContain('10/dia')
   })
 
   it('recusa corpo maior que 64 KB com 413', async () => {
@@ -897,6 +911,7 @@ describe('Cloudflare Worker Proxy (/chat)', () => {
         )
       },
     })
+
     const token = await signTestJwt({
       iss: `https://securetoken.google.com/${PROJECT_ID}`,
       aud: PROJECT_ID,
@@ -941,6 +956,49 @@ describe('Cloudflare Worker Proxy (/chat)', () => {
       body: JSON.stringify({ messages: [{ role: 'user', content: 'x'.repeat(70 * 1024) }] }),
     })
     expect((await handleRequest(bigChat, env, { fetcher: badFetcher, nowMs })).status).toBe(413)
+  })
+
+  it('/analyze-faculty-schedule: analisa a grade usando a cota de fotos e valida o JSON', async () => {
+    const env = makeBaseEnv()
+    let groqBody: any = null
+    const fetcher = createMockFetcher({
+      onGroqCall: (init) => {
+        groqBody = JSON.parse(String(init?.body ?? '{}'))
+        return new Response(
+          JSON.stringify({
+            choices: [{ message: { content: '{"aulas":[{"disciplina":"Cálculo II","dia":"segunda-feira","inicio":"08:00","fim":"10:00","sala":"A-101","professor":null}]}' } }],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        )
+      },
+    })
+    const token = await signTestJwt({
+      iss: `https://securetoken.google.com/${PROJECT_ID}`,
+      aud: PROJECT_ID,
+      sub: MY_UID,
+      iat: nowSec - 10,
+      exp: nowSec + 3600,
+    })
+    const post = (body: unknown) =>
+      new Request('https://worker.example.com/analyze-faculty-schedule', {
+        method: 'POST',
+        headers: { Origin: ALLOWED_ORIGIN, Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+
+    const image = `data:image/jpeg;base64,${'A'.repeat(200_000)}`
+    const response = await handleRequest(post({ image }), env, { fetcher, nowMs })
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({
+      aulas: [{ disciplina: 'Cálculo II', dia: 'segunda-feira', inicio: '08:00', fim: '10:00', sala: 'A-101', professor: null }],
+    })
+    expect(groqBody.messages[0].content[1]).toEqual({ type: 'image_url', image_url: { url: image } })
+    expect(groqBody.response_format).toEqual({ type: 'json_object' })
+
+    const invalid = await handleRequest(post({ image, extra: true }), env, { fetcher, nowMs })
+    expect(invalid.status).toBe(400)
+    expect(parseFacultyScheduleContent('{"aulas":[]}')).toEqual({ aulas: [] })
+    expect(() => parseFacultyScheduleContent('{"items":[]}')).toThrow('formato inesperado')
   })
 
   it('/transcribe: transcreve multipart/form-data com whisper-large-v3-turbo (language=pt, response_format=json, temperature=0) e valida limites', async () => {
