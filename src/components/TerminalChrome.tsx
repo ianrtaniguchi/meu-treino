@@ -1,8 +1,7 @@
 import { useLiveQuery } from 'dexie-react-hooks'
-import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
+import { createContext, useEffect, useState, type ReactNode } from 'react'
 import { DB_VERSION, db } from '../data/db'
 import { useSyncStatus } from '../hooks'
-import Icon from './Icons'
 import {
   authenticateBiometricCredential,
   computePinBackoffMs,
@@ -174,7 +173,7 @@ export function Statusline() {
 /**
  * Cabeçalho editorial da página:
  * Caminho `~/aba` discreto em fonte pequena acima do título direto em serifa (`Newsreader`),
- * com gatilho implícito de Configurações à direita e efeito Liquid Glass reduzido ao rolar.
+ * com efeito Liquid Glass reduzido ao rolar.
  */
 export function PromptTitle({
   path,
@@ -185,7 +184,6 @@ export function PromptTitle({
   title?: string
   rightSlot?: ReactNode
 }) {
-  const { isConfigActive, hasConfigAlert, onToggleConfig } = useContext(ChromeNavContext)
   const resolvedTitle = title ?? PATH_TITLES[path] ?? path.replace(/^~\//, '')
 
   return (
@@ -194,23 +192,7 @@ export function PromptTitle({
         <span className="prompt-path">{path}</span>
         <h1 className="prompt-title">{resolvedTitle}</h1>
       </div>
-      <div className="prompt-header-actions">
-        {rightSlot}
-        {onToggleConfig && (
-          <button
-            type="button"
-            className={`implicit-config-btn${isConfigActive ? ' on' : ''}`}
-            onClick={onToggleConfig}
-            aria-label={isConfigActive ? 'Voltar da tela de configurações' : 'Configurações (~/config)'}
-            title={isConfigActive ? 'Voltar' : 'Configurações (~/config)'}
-          >
-            <Icon name="config" />
-            {hasConfigAlert && !isConfigActive && (
-              <span className="implicit-config-dot" aria-hidden="true" />
-            )}
-          </button>
-        )}
-      </div>
+      {rightSlot ? <div className="prompt-header-actions">{rightSlot}</div> : null}
     </header>
   )
 }

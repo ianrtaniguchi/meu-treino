@@ -45,21 +45,18 @@ import {
 type Tab = 'treino' | 'dieta' | 'corpo' | 'assistente' | 'noticias' | 'onibus' | 'config'
 const ALL_TABS: Tab[] = ['treino', 'dieta', 'corpo', 'assistente', 'noticias', 'onibus', 'config']
 /**
- * Barra inferior Liquid Glass com o Agente de IA (`assistente`) posicionado exatamente
- * no centro geométrico (50%) da cápsula:
- * - Asa esquerda (42%): treino, dieta, corpo
- * - Centro (16%, de 42% a 58%): assistente (IA)
- * - Asa direita (42%): noticias, onibus
- * - Configurações (`config`) movida para o gatilho implícito no topo.
+ * Barra inferior Liquid Glass 100% simétrica com 5 slots iguais (20% cada):
+ * - Esquerda: treino, noticias
+ * - Centro (50%): assistente (Esfera da IA --orb-size: 66px)
+ * - Direita: onibus, config
  */
-const NAV_TABS: Tab[] = ['treino', 'dieta', 'corpo', 'assistente', 'noticias', 'onibus']
+const NAV_TABS: Tab[] = ['treino', 'noticias', 'assistente', 'onibus', 'config']
 const NAV_SLOTS: Array<{ tab: Tab; left: number; width: number }> = [
-  { tab: 'treino', left: 0, width: 0.1333 },
-  { tab: 'dieta', left: 0.1333, width: 0.1333 },
-  { tab: 'corpo', left: 0.2666, width: 0.1334 },
+  { tab: 'treino', left: 0, width: 0.2 },
+  { tab: 'noticias', left: 0.2, width: 0.2 },
   { tab: 'assistente', left: 0.4, width: 0.2 },
-  { tab: 'noticias', left: 0.6, width: 0.2 },
-  { tab: 'onibus', left: 0.8, width: 0.2 },
+  { tab: 'onibus', left: 0.6, width: 0.2 },
+  { tab: 'config', left: 0.8, width: 0.2 },
 ]
 const TAB_LABELS: Record<Tab, string> = {
   treino: 'Treino (~/treino)',
@@ -426,7 +423,7 @@ export default function App() {
         </main>
         <nav
           ref={navRef}
-          className={`tabbar${tabPressing ? ' pressing' : ''}`}
+          className={`tabbar${tabPressing ? ' pressing' : ''}${tab === 'assistente' ? ' ai-active' : ''}`}
           style={
             {
               '--active-idx': activeTabIndex,
