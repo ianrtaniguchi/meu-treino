@@ -1,5 +1,13 @@
-import { useMemo, useState } from 'react'
-import { filterLines } from '../../services/ceturbService'
+import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import {
+  filterLines,
+  getFavoriteStopIds,
+  listarPontosDeParada,
+  obterEstimativasPorOrigem,
+  pesquisarPontosDeParada,
+  toggleFavoriteStopId,
+  type GeocontrolJson,
+} from '../../services/ceturbService'
 import type { CeturbLine } from '../../types/ceturb'
 import LineDetailView from './LineDetailView'
 
@@ -16,6 +24,418 @@ interface LinesSchedulesViewProps {
 
 const QUICK_FILTERS = ['500', '501', '503', '506', '507', '508', 'Ifes', 'Aquaviário']
 
+interface Stop {
+  id: number
+  name: string
+  address: string
+  reference: string
+}
+
+function isRecord(value: GeocontrolJson): value is Record<string, GeocontrolJson> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function recordsFrom(value: GeocontrolJson): Record<string, GeocontrolJson>[] {
+  if (Array.isArray(value)) return value.filter(isRecord)
+  if (!isRecord(value)) return []
+
+  const containers = [
+    'dados',
+    'data',
+    'resultados',
+    'pontos',
+    'pontosDeParada',
+    'estimativas',
+    'previsoes',
+    'items',
+    'rows',
+  ]
+  for (const [key, nested] of Object.entries(value)) {
+    if (containers.includes(key.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase())) {
+      const nestedRecords = recordsFrom(nested)
+      if (nestedRecords.length > 0) return nestedRecords
+    }
+  }
+  return [value]
+}
+
+function fieldValue(record: Record<string, GeocontrolJson>, keys: string[]): string {
+  const wanted = keys.map((key) => key.toLowerCase().replace(/[^a-z0-9]/g, ''))
+  for (const [key, value] of Object.entries(record)) {
+    const normalizedKey = key.toLowerCase().replace(/[^a-z0-9]/g, '')
+    if (!wanted.includes(normalizedKey) || value === null || typeof value === 'object') continue
+    return String(value)
+  }
+  return ''
+}
+
+function toStop(record: Record<string, GeocontrolJson>): Stop | null {
+  const idText = fieldValue(record, [
+    'id',
+    'pontoId',
+    'pontoDeParadaId',
+    'idPontoDeParada',
+    'codigo',
+    'codigoPonto',
+  ])
+  const id = Number(idText)
+  if (!Number.isSafeInteger(id) || id <= 0) return null
+  return {
+    id,
+    name:
+      fieldValue(record, ['nome', 'nomePonto', 'nomePontoDeParada', 'descricao']) ||
+      `Ponto ${id}`,
+    address: fieldValue(record, ['endereco', 'logradouro', 'rua', 'localizacao']),
+    reference: fieldValue(record, ['referencia', 'pontoReferencia', 'complemento', 'bairro']),
+  }
+}
+
+function stopsFrom(value: GeocontrolJson): Stop[] {
+  return recordsFrom(value)
+    .map(toStop)
+    .filter((stop): stop is Stop => stop !== null)
+}
+
+function SearchIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18" fill="none">
+      <circle cx="10.8" cy="10.8" r="6.3" stroke="currentColor" strokeWidth="1.8" />
+      <path d="m15.5 15.5 4 4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  )
+}
+
+function RefreshIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" width="16" height="16" fill="none">
+      <path
+        d="M20 7v5h-5M4.6 9a7.5 7.5 0 0 1 12.8-2L20 12M4 17v-5h5m10.4 3a7.5 7.5 0 0 1-12.8 2L4 12"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
+}
+
+function StarIcon({ active }: { active: boolean }) {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18">
+      <path
+        d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-3-5.6 3 1.1-6.2L3 9.6l6.2-.9L12 3Z"
+        fill={active ? 'currentColor' : 'none'}
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
+}
+
+function LiveStopsView() {
+  const [query, setQuery] = useState('')
+  const [stops, setStops] = useState<Stop[]>([])
+  const [favoriteIds, setFavoriteIds] = useState<number[]>(() => getFavoriteStopIds())
+  const [favoriteStops, setFavoriteStops] = useState<Stop[]>([])
+  const [selectedStop, setSelectedStop] = useState<Stop | null>(null)
+  const [estimates, setEstimates] = useState<Record<string, GeocontrolJson>[]>([])
+  const [hasSearched, setHasSearched] = useState(false)
+  const [searching, setSearching] = useState(false)
+  const [loadingEstimates, setLoadingEstimates] = useState(false)
+  const [searchError, setSearchError] = useState<string | null>(null)
+  const [estimateError, setEstimateError] = useState<string | null>(null)
+  const [favoriteError, setFavoriteError] = useState<string | null>(null)
+  const [refreshedAt, setRefreshedAt] = useState<Date | null>(null)
+  const [refreshVersion, setRefreshVersion] = useState(0)
+  const favoriteIdsKey = favoriteIds.join(',')
+
+  useEffect(() => {
+    let active = true
+    const ids = favoriteIdsKey ? favoriteIdsKey.split(',').map(Number) : []
+    if (ids.length === 0) {
+      setFavoriteStops([])
+      setFavoriteError(null)
+      return () => {
+        active = false
+      }
+    }
+    void listarPontosDeParada(ids)
+      .then((response) => {
+        if (active) {
+          setFavoriteStops(stopsFrom(response))
+          setFavoriteError(null)
+        }
+      })
+      .catch((error: unknown) => {
+        if (active) {
+          setFavoriteError(
+            error instanceof Error ? error.message : 'Não foi possível carregar os pontos favoritos.',
+          )
+        }
+      })
+    return () => {
+      active = false
+    }
+  }, [favoriteIdsKey])
+
+  const selectedStopId = selectedStop?.id
+  useEffect(() => {
+    if (!selectedStopId) return
+    let active = true
+    let inFlight = false
+    const refresh = async () => {
+      if (inFlight) return
+      inFlight = true
+      setLoadingEstimates(true)
+      try {
+        const response = await obterEstimativasPorOrigem(selectedStopId)
+        if (active) {
+          setEstimates(recordsFrom(response))
+          setEstimateError(null)
+          setRefreshedAt(new Date())
+        }
+      } catch (error) {
+        if (active) {
+          setEstimateError(
+            error instanceof Error ? error.message : 'Não foi possível atualizar as previsões.',
+          )
+        }
+      } finally {
+        inFlight = false
+        if (active) setLoadingEstimates(false)
+      }
+    }
+    void refresh()
+    const intervalId = window.setInterval(() => void refresh(), 30_000)
+    return () => {
+      active = false
+      window.clearInterval(intervalId)
+    }
+  }, [selectedStopId, refreshVersion])
+
+  const search = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    const text = query.trim()
+    if (!text) {
+      setSearchError('Digite um nome, rua ou referência para buscar.')
+      return
+    }
+    setSearching(true)
+    setSearchError(null)
+    setHasSearched(true)
+    setSelectedStop(null)
+    setEstimates([])
+    try {
+      setStops(stopsFrom(await pesquisarPontosDeParada(text)))
+    } catch (error) {
+      setStops([])
+      setSearchError(
+        error instanceof Error ? error.message : 'Não foi possível pesquisar pontos de parada.',
+      )
+    } finally {
+      setSearching(false)
+    }
+  }
+
+  const toggleFavorite = (stop: Stop) => {
+    const next = toggleFavoriteStopId(stop.id)
+    setFavoriteIds(next)
+    setFavoriteError(null)
+  }
+
+  const selectStop = (stop: Stop) => {
+    setSelectedStop(stop)
+    setEstimates([])
+    setEstimateError(null)
+    setRefreshedAt(null)
+  }
+
+  return (
+    <div className="stack">
+      <div className="card stack">
+        <form className="row" onSubmit={search} style={{ gap: 8 }}>
+          <input
+            type="search"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Buscar por ponto, rua ou referência"
+            aria-label="Buscar pontos de parada por nome, rua ou referência"
+            style={{ minHeight: 44, flex: 1, minWidth: 0 }}
+          />
+          <button
+            type="submit"
+            aria-label="Buscar pontos de parada"
+            title="Buscar pontos de parada"
+            disabled={searching}
+            style={{ minHeight: 44, minWidth: 44 }}
+          >
+            {searching ? '...' : <SearchIcon />}
+          </button>
+        </form>
+        {searchError && <div className="red small">{searchError}</div>}
+        <div className="muted small">
+          Procure pelo nome da parada, endereço ou ponto de referência.
+        </div>
+      </div>
+
+      {favoriteIds.length > 0 && (
+        <div className="card stack">
+          <div className="row between">
+            <b>Pontos favoritos</b>
+            <span className="muted small">{favoriteIds.length}</span>
+          </div>
+          {favoriteError && <div className="amber small">{favoriteError}</div>}
+          {favoriteStops.length > 0 ? (
+            <div className="chips">
+              {favoriteStops.map((stop) => (
+                <button
+                  key={stop.id}
+                  type="button"
+                  className={`small ${selectedStop?.id === stop.id ? 'on' : ''}`}
+                  onClick={() => selectStop(stop)}
+                  style={{ minHeight: 44 }}
+                >
+                  {stop.name}
+                </button>
+              ))}
+            </div>
+          ) : !favoriteError ? (
+            <div className="muted small">Carregando os detalhes dos pontos favoritos...</div>
+          ) : null}
+        </div>
+      )}
+
+      {stops.length > 0 && (
+        <div className="card stack">
+          <b>Resultados ({stops.length})</b>
+          {stops.map((stop) => {
+            const favorite = favoriteIds.includes(stop.id)
+            return (
+              <div key={stop.id} className="item" style={{ justifyContent: 'space-between', gap: 8 }}>
+                <button
+                  type="button"
+                  className="grow"
+                  onClick={() => selectStop(stop)}
+                  aria-pressed={selectedStop?.id === stop.id}
+                  style={{
+                    minHeight: 44,
+                    padding: '6px 8px',
+                    textAlign: 'left',
+                    background: 'transparent',
+                    border: 0,
+                    color: 'inherit',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <span style={{ display: 'block', fontWeight: 600 }}>{stop.name}</span>
+                  {(stop.address || stop.reference) && (
+                    <span className="muted small">
+                      {[stop.address, stop.reference].filter(Boolean).join(' · ')}
+                    </span>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  className={`small ${favorite ? 'on' : 'ghost'}`}
+                  onClick={() => toggleFavorite(stop)}
+                  aria-label={
+                    favorite
+                      ? `Remover ${stop.name} dos favoritos`
+                      : `Favoritar ${stop.name}`
+                  }
+                  title={favorite ? 'Remover dos favoritos' : 'Favoritar ponto'}
+                  style={{ minHeight: 44, minWidth: 44 }}
+                >
+                  <StarIcon active={favorite} />
+                </button>
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      {hasSearched && !searching && !searchError && stops.length === 0 && (
+        <div className="card muted small">
+          Nenhum ponto encontrado. Tente outra rua, nome ou referência.
+        </div>
+      )}
+
+      {selectedStop && (
+        <div className="card stack">
+          <div className="row between" style={{ gap: 8 }}>
+            <div>
+              <b>{selectedStop.name}</b>
+              {(selectedStop.address || selectedStop.reference) && (
+                <div className="muted small">
+                  {[selectedStop.address, selectedStop.reference].filter(Boolean).join(' · ')}
+                </div>
+              )}
+            </div>
+            <button
+              type="button"
+              className="small ghost"
+              disabled={loadingEstimates}
+              onClick={() => setRefreshVersion((version) => version + 1)}
+              aria-label="Atualizar previsões de chegada"
+              title="Atualizar previsões"
+              style={{ minHeight: 44, minWidth: 44 }}
+            >
+              <RefreshIcon />
+            </button>
+          </div>
+          <div className="muted small">
+            Previsões de chegada
+            {refreshedAt && (
+              <> · atualizado às {refreshedAt.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</>
+            )}
+          </div>
+          {loadingEstimates && estimates.length === 0 && (
+            <div className="muted small">Consultando previsões em tempo real...</div>
+          )}
+          {estimateError && <div className="red small">{estimateError}</div>}
+          {!loadingEstimates && !estimateError && estimates.length === 0 && (
+            <div className="muted small">Nenhuma previsão disponível para este ponto agora.</div>
+          )}
+          {estimates.map((estimate, index) => {
+            const line =
+              fieldValue(estimate, ['linha', 'codigoLinha', 'numeroLinha', 'nomeLinha']) ||
+              'Linha não identificada'
+            const arrival = fieldValue(estimate, [
+              'estimativa',
+              'previsao',
+              'previsaoChegada',
+              'horarioPrevisto',
+              'tempoChegada',
+              'minutos',
+            ])
+            const destination = fieldValue(estimate, [
+              'destino',
+              'descricaoLinha',
+              'itinerario',
+              'sentido',
+            ])
+            return (
+              <div key={`${line}-${arrival}-${index}`} className="item row between">
+                <div className="row grow" style={{ gap: 10 }}>
+                  <span className="bus-badge">{line}</span>
+                  {destination && <span className="muted small">{destination}</span>}
+                </div>
+                <b>{arrival || 'Previsão indisponível'}</b>
+              </div>
+            )
+          })}
+          <div className="muted small">Atualização automática a cada 30 segundos.</div>
+        </div>
+      )}
+
+      <div className="muted small" style={{ textAlign: 'center', padding: '4px 8px' }}>
+        Dados em tempo real: Geocontrol / GVBus / Ceturb-ES
+      </div>
+    </div>
+  )
+}
+
 export default function LinesSchedulesView({
   lines,
   loading,
@@ -27,6 +447,7 @@ export default function LinesSchedulesView({
   onSelectLine,
 }: LinesSchedulesViewProps) {
   const [query, setQuery] = useState<string>('')
+  const [activeView, setActiveView] = useState<'linhas' | 'ao-vivo'>('linhas')
 
   const favoriteSet = useMemo(() => new Set(favoriteIds), [favoriteIds])
 
@@ -54,8 +475,56 @@ export default function LinesSchedulesView({
     )
   }
 
+  if (activeView === 'ao-vivo') {
+    return (
+      <div className="stack">
+        <div className="tabs" role="tablist" aria-label="Consulta de ônibus">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={false}
+            onClick={() => setActiveView('linhas')}
+            style={{ minHeight: 44 }}
+          >
+            Linhas
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={true}
+            className="on"
+            style={{ minHeight: 44 }}
+          >
+            Ao Vivo / Pontos
+          </button>
+        </div>
+        <LiveStopsView />
+      </div>
+    )
+  }
+
   return (
     <div className="stack">
+      <div className="tabs" role="tablist" aria-label="Consulta de ônibus">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={true}
+          className="on"
+          style={{ minHeight: 44 }}
+        >
+          Linhas
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={false}
+          onClick={() => setActiveView('ao-vivo')}
+          style={{ minHeight: 44 }}
+        >
+          Ao Vivo / Pontos
+        </button>
+      </div>
       {/* Linhas Favoritas fixadas no topo para acesso em 1 toque */}
       <div className="card stack">
         <div className="row between">
